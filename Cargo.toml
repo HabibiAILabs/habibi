@@ -1,0 +1,21 @@
+[package]
+name = "habibi"
+version = "0.1.0"
+edition = "2024"
+description = "A local, event-sourced AI runtime with one continuous conversation"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+dotenvy = "0.15"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+uuid = { version = "1", features = ["serde", "v7"] }
+
+[dev-dependencies]
+tempfile = "3"
