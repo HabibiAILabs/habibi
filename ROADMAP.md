@@ -10,7 +10,8 @@ Habibi is a local, event-sourced AI runtime. This roadmap describes direction ra
 - Concurrent action batches with durable requests and results
 - Native OpenAI ChatGPT/Codex OAuth transport
 - Model pricing catalog, token/cache accounting, and historical cost snapshots
-- Capability-declared Lua extensions with web, KV, events, tools, and reaction context
+- Capability-declared Lua extensions with web, KV, events, tools, owned context hooks, and separate tool suggestions
+- Searchable chain-scoped tool surfaces with global advertisement, call, outcome, latency, and schema-token measurements
 - Local and Git extension installation with source/revision/version/hash provenance
 - Extension update checks, hot reload, rollback, and management UI
 - Automatic extension security/privacy scanning before installation or update

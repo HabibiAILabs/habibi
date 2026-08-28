@@ -1,5 +1,6 @@
 mod auth;
 mod catalog;
+mod context;
 mod event;
 mod extension;
 mod installer;
@@ -82,25 +83,12 @@ async fn main() -> Result<()> {
 
     let database_path = std::env::var("HABIBI_DB").unwrap_or_else(|_| "habibi.db".to_owned());
     let bind_address = std::env::var("HABIBI_BIND").unwrap_or_else(|_| "127.0.0.1:8787".to_owned());
-    let context_message_limit = std::env::var("HABIBI_CONTEXT_MESSAGES")
-        .unwrap_or_else(|_| "40".to_owned())
-        .parse::<usize>()
-        .context("HABIBI_CONTEXT_MESSAGES must be a positive integer")?;
-    if context_message_limit == 0 {
-        bail!("HABIBI_CONTEXT_MESSAGES must be greater than zero");
-    }
-
     let catalog = CatalogManager::from_env()?;
     let model = ModelClient::new(ModelConfig::from_env()?, catalog)?;
     let store = EventStore::open(&database_path)?.shared();
     let extensions = Arc::new(ExtensionManager::load(&extensions_path, store.clone())?);
     let tools = Arc::new(ToolRuntime::new(store.clone(), extensions.clone())?);
-    let reactor = Arc::new(Reactor::new(
-        store.clone(),
-        model,
-        tools,
-        context_message_limit,
-    ));
+    let reactor = Arc::new(Reactor::new(store.clone(), model, tools));
     reactor.record_runtime_started()?;
     let state = WebState {
         extensions: extensions.clone(),

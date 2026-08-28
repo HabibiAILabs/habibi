@@ -520,15 +520,11 @@ mod tests {
         fs::write(
             root.join("extension.toml"),
             format!(
-                "id = \"example\"\nname = \"Example\"\nversion = \"{version}\"\napi_version = 1\n"
+                "id = \"example\"\nname = \"Example\"\nversion = \"{version}\"\napi_version = 2\n"
             ),
         )
         .unwrap();
-        fs::write(
-            root.join("extension.lua"),
-            "habibi.reactions.context(function(_) return habibi.array({}) end)\n",
-        )
-        .unwrap();
+        fs::write(root.join("extension.lua"), "-- valid empty extension\n").unwrap();
     }
 
     #[test]

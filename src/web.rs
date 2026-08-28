@@ -344,6 +344,7 @@ async fn toggle_extension(
     Path(extension_id): Path<String>,
     axum::Json(toggle): axum::Json<ExtensionToggle>,
 ) -> Response {
+    let _reaction_guard = state.reaction_lock.lock().await;
     match state.extensions.set_enabled(&extension_id, toggle.enabled) {
         Ok(true) => json_response(
             StatusCode::OK,
@@ -581,7 +582,7 @@ async fn handle_extension_request_inner(
     if let Some(mut outcome) =
         tokio::task::block_in_place(|| extension.handle_route(method.as_str(), &path, request))?
     {
-        process_route_outcome(&state, &extension_id, &extension, &mut outcome).await?;
+        process_route_outcome(&state, &extension_id, &mut outcome).await?;
         return route_response(outcome);
     }
 
@@ -604,7 +605,6 @@ async fn handle_extension_request_inner(
 async fn process_route_outcome(
     state: &WebState,
     extension_id: &str,
-    extension: &crate::extension::LoadedExtension,
     outcome: &mut RouteOutcome,
 ) -> anyhow::Result<()> {
     let Some(draft) = outcome.emit.take() else {
@@ -624,11 +624,7 @@ async fn process_route_outcome(
     append(&state.store, &trigger)?;
     add_response_field(outcome, "event_id", Value::String(trigger.id.to_string()));
 
-    let reaction_result: anyhow::Result<()> = async {
-        let context = tokio::task::block_in_place(|| extension.compile_context(&trigger))?;
-        state.reactor.react(&trigger, context).await
-    }
-    .await;
+    let reaction_result = state.reactor.react(&trigger).await;
 
     match reaction_result {
         Ok(()) => {

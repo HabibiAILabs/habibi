@@ -1,14 +1,18 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{
     event::Event,
-    extension::{EventDraft, ExtensionManager},
+    extension::{
+        ContextHookExecution, EventDraft, ExtensionManager, LoadedExtension,
+        ToolSuggestionHookExecution,
+    },
     store::{SharedEventStore, StoreEventQuery, StoreLogQuery},
 };
 
@@ -42,6 +46,32 @@ pub struct ToolExecution {
 }
 
 #[derive(Clone)]
+enum ToolProvider {
+    Builtin,
+    Extension(Arc<LoadedExtension>),
+}
+
+#[derive(Clone)]
+pub struct ToolCatalog {
+    pub generation: String,
+    definitions: Vec<ToolDefinition>,
+    providers: BTreeMap<String, ToolProvider>,
+}
+
+impl ToolCatalog {
+    pub fn definitions(&self) -> &[ToolDefinition] {
+        &self.definitions
+    }
+
+    pub fn definition(&self, name: &str) -> Option<ToolDefinition> {
+        self.definitions
+            .iter()
+            .find(|definition| definition.name == name)
+            .cloned()
+    }
+}
+
+#[derive(Clone)]
 pub struct ToolRuntime {
     store: SharedEventStore,
     extensions: Arc<ExtensionManager>,
@@ -50,41 +80,95 @@ pub struct ToolRuntime {
 impl ToolRuntime {
     pub fn new(store: SharedEventStore, extensions: Arc<ExtensionManager>) -> Result<Self> {
         let runtime = Self { store, extensions };
-        let definitions = runtime.definitions();
-        let mut names = std::collections::HashSet::new();
-        let mut provider_names = std::collections::HashSet::new();
-        for definition in definitions {
-            if !names.insert(definition.name.clone()) {
+        runtime.catalog()?;
+        Ok(runtime)
+    }
+
+    pub fn catalog(&self) -> Result<Arc<ToolCatalog>> {
+        let mut providers = BTreeMap::new();
+        let mut definitions = builtin_definitions();
+        for definition in &definitions {
+            providers.insert(definition.name.clone(), ToolProvider::Builtin);
+        }
+        let mut fingerprints = definitions
+            .iter()
+            .map(|definition| json!({ "definition": definition, "provider": "core" }))
+            .collect::<Vec<_>>();
+        for (definition, extension) in self.extensions.tool_catalog_entries() {
+            if providers
+                .insert(
+                    definition.name.clone(),
+                    ToolProvider::Extension(extension.clone()),
+                )
+                .is_some()
+            {
                 bail!("duplicate tool name '{}'", definition.name);
             }
+            fingerprints.push(json!({
+                "definition": &definition,
+                "extension": extension.manifest.id,
+                "version": extension.manifest.version,
+                "extension_generation": extension.generation,
+            }));
+            definitions.push(definition);
+        }
+        definitions.sort_by(|left, right| left.name.cmp(&right.name));
+        fingerprints.sort_by_key(Value::to_string);
+        let mut provider_names = std::collections::HashSet::new();
+        for definition in &definitions {
             let provider_name = provider_tool_name(&definition.name);
             if !provider_names.insert(provider_name.clone()) {
                 bail!("tool names collide after provider normalization: '{provider_name}'");
             }
         }
-        Ok(runtime)
+        let generation = format!("{:x}", Sha256::digest(serde_json::to_vec(&fingerprints)?));
+        Ok(Arc::new(ToolCatalog {
+            generation,
+            definitions,
+            providers,
+        }))
     }
 
-    pub fn definitions(&self) -> Vec<ToolDefinition> {
-        let mut definitions = builtin_definitions();
-        definitions.extend(self.extensions.tool_definitions());
-        definitions.sort_by(|left, right| left.name.cmp(&right.name));
-        definitions
+    pub fn context_hooks(&self, trigger: &Event) -> Result<Vec<ContextHookExecution>> {
+        self.extensions.run_context_hooks(trigger)
     }
 
-    pub async fn execute(&self, call: &ToolCall, context: &ToolContext) -> Result<ToolExecution> {
-        if call.name.starts_with("habibi.events.") || call.name.starts_with("habibi.logs.") {
-            return self.execute_builtin(call, context);
+    pub fn tool_suggestion_hooks(
+        &self,
+        trigger: &Event,
+    ) -> Result<Vec<ToolSuggestionHookExecution>> {
+        self.extensions.run_tool_suggestion_hooks(trigger)
+    }
+
+    pub async fn execute(
+        &self,
+        catalog: &ToolCatalog,
+        call: &ToolCall,
+        context: &ToolContext,
+    ) -> Result<ToolExecution> {
+        let provider = catalog
+            .providers
+            .get(&call.name)
+            .with_context(|| format!("tool '{}' is not in the pinned catalog", call.name))?;
+        match provider {
+            ToolProvider::Builtin => self.execute_builtin(catalog, call, context),
+            ToolProvider::Extension(extension) => {
+                let extension = extension.clone();
+                let call = call.clone();
+                let context = context.clone();
+                tokio::task::spawn_blocking(move || extension.execute_tool(&call, &context))
+                    .await
+                    .context("extension tool task failed")?
+            }
         }
-        let extensions = self.extensions.clone();
-        let call = call.clone();
-        let context = context.clone();
-        tokio::task::spawn_blocking(move || extensions.execute_tool(&call, &context))
-            .await
-            .context("extension tool task failed")?
     }
 
-    fn execute_builtin(&self, call: &ToolCall, context: &ToolContext) -> Result<ToolExecution> {
+    fn execute_builtin(
+        &self,
+        catalog: &ToolCatalog,
+        call: &ToolCall,
+        context: &ToolContext,
+    ) -> Result<ToolExecution> {
         match call.name.as_str() {
             "habibi.events.get" => self.events_get(&call.arguments),
             "habibi.events.query" => self.events_query(&call.arguments),
@@ -92,6 +176,7 @@ impl ToolRuntime {
             "habibi.events.related" => self.events_related(&call.arguments),
             "habibi.logs.get" => self.logs_get(&call.arguments),
             "habibi.logs.query" => self.logs_query(&call.arguments),
+            "habibi.tools.search" => self.tools_search(catalog, &call.arguments),
             _ => bail!("unknown built-in tool '{}'", call.name),
         }
     }
@@ -187,17 +272,19 @@ impl ToolRuntime {
             .get("bidirectional")
             .and_then(Value::as_bool)
             .unwrap_or(true);
-        {
+        let (from_event_type, to_event_type) = {
             let store = self
                 .store
                 .lock()
                 .map_err(|_| anyhow::anyhow!("event store lock poisoned"))?;
-            if store.get_event(Some(&from_event_id), None)?.is_none()
-                || store.get_event(Some(&to_event_id), None)?.is_none()
-            {
-                bail!("both linked events must exist");
-            }
-        }
+            let from = store
+                .get_event(Some(&from_event_id), None)?
+                .context("linked source event must exist")?;
+            let to = store
+                .get_event(Some(&to_event_id), None)?
+                .context("linked target event must exist")?;
+            (from.event.event_type, to.event.event_type)
+        };
         let link_id = Uuid::now_v7().to_string();
         Ok(ToolExecution {
             result: json!({ "link_id": link_id, "linked": true }),
@@ -206,7 +293,9 @@ impl ToolRuntime {
                 payload: json!({
                     "link_id": link_id,
                     "from_event_id": from_event_id,
+                    "from_event_type": from_event_type,
                     "to_event_id": to_event_id,
+                    "to_event_type": to_event_type,
                     "relation": relation,
                     "description": description,
                     "bidirectional": bidirectional
@@ -282,6 +371,49 @@ impl ToolRuntime {
         })
     }
 
+    fn tools_search(&self, catalog: &ToolCatalog, arguments: &Value) -> Result<ToolExecution> {
+        let query = required_string(arguments, "query")?;
+        let limit = arguments
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(5)
+            .clamp(1, 10) as usize;
+        let query_terms = search_terms(&query);
+        if query_terms.is_empty() {
+            bail!("tool search query must contain searchable text");
+        }
+        let mut matches = catalog
+            .definitions()
+            .iter()
+            .filter(|definition| definition.name != "habibi.tools.search")
+            .cloned()
+            .filter_map(|definition| {
+                let score = tool_search_score(&definition, &query_terms);
+                (score > 0).then_some((score, definition))
+            })
+            .collect::<Vec<_>>();
+        matches.sort_by(|(left_score, left), (right_score, right)| {
+            right_score
+                .cmp(left_score)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        let tools = matches
+            .into_iter()
+            .take(limit)
+            .map(|(_, definition)| {
+                json!({
+                    "tool": definition.name,
+                    "description": definition.description,
+                    "schema": definition.input_schema,
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(ToolExecution {
+            result: json!({ "tools": tools }),
+            events: vec![],
+        })
+    }
+
     fn events_related(&self, arguments: &Value) -> Result<ToolExecution> {
         let event_id = required_string(arguments, "event_id")?;
         let relation = arguments.get("relation").and_then(Value::as_str);
@@ -300,6 +432,29 @@ impl ToolRuntime {
             events: vec![],
         })
     }
+}
+
+fn search_terms(query: &str) -> Vec<String> {
+    query
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|term| !term.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
+fn tool_search_score(definition: &ToolDefinition, terms: &[String]) -> u64 {
+    let name = definition.name.to_ascii_lowercase();
+    let description = definition.description.to_ascii_lowercase();
+    let schema = definition.input_schema.to_string().to_ascii_lowercase();
+    terms
+        .iter()
+        .map(|term| {
+            u64::from(name == *term) * 100
+                + u64::from(name.contains(term)) * 20
+                + u64::from(description.contains(term)) * 5
+                + u64::from(schema.contains(term))
+        })
+        .sum()
 }
 
 fn required_string(arguments: &Value, key: &str) -> Result<String> {
@@ -327,6 +482,18 @@ pub fn domain_tool_name<'a>(
 
 fn builtin_definitions() -> Vec<ToolDefinition> {
     vec![
+        definition(
+            "habibi.tools.search",
+            "Search the installed tool registry by capability. Returns matching tool names, descriptions, and schemas.",
+            json!({
+                "type":"object",
+                "properties":{
+                    "query":{"type":"string","description":"Describe the capability or operation needed."},
+                    "limit":{"type":"integer","minimum":1,"maximum":10}
+                },
+                "required":["query"]
+            }),
+        ),
         definition(
             "habibi.events.get",
             "Get one event by event ID or sequence.",
@@ -391,5 +558,82 @@ fn definition(name: &str, description: &str, input_schema: Value) -> ToolDefinit
         name: name.into(),
         description: description.into(),
         input_schema,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{extension::ExtensionManager, store::EventStore};
+
+    fn write_tool_extension(directory: &std::path::Path, version: &str, result: &str) {
+        std::fs::create_dir_all(directory).unwrap();
+        std::fs::write(
+            directory.join("extension.toml"),
+            format!(
+                "id = \"example\"\nname = \"Example\"\nversion = \"{version}\"\napi_version = 2\n[capabilities]\ntools = true\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            directory.join("extension.lua"),
+            format!(
+                "habibi.tools.register({{ name = \"example.read\", description = \"Read\", input_schema = {{ type = \"object\" }} }}, function() return {{ result = {{ value = \"{result}\" }} }} end)"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn tool_search_returns_only_model_facing_definition_fields() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = EventStore::open(":memory:").unwrap().shared();
+        let extensions = Arc::new(ExtensionManager::load(directory.path(), store.clone()).unwrap());
+        let runtime = ToolRuntime::new(store, extensions).unwrap();
+        let catalog = runtime.catalog().unwrap();
+        let execution = runtime
+            .tools_search(&catalog, &json!({ "query": "query events", "limit": 2 }))
+            .unwrap();
+        let first = execution.result["tools"]
+            .as_array()
+            .unwrap()
+            .first()
+            .unwrap();
+        assert!(first.get("tool").is_some());
+        assert!(first.get("description").is_some());
+        assert!(first.get("schema").is_some());
+        assert_eq!(first.as_object().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn pinned_catalog_executes_the_original_extension_generation() {
+        let directory = tempfile::tempdir().unwrap();
+        let extension_directory = directory.path().join("example");
+        write_tool_extension(&extension_directory, "1.0.0", "old");
+        let store = EventStore::open(":memory:").unwrap().shared();
+        let extensions = Arc::new(ExtensionManager::load(directory.path(), store.clone()).unwrap());
+        let runtime = ToolRuntime::new(store, extensions.clone()).unwrap();
+        let catalog = runtime.catalog().unwrap();
+        write_tool_extension(&extension_directory, "2.0.0", "new");
+        extensions.reload("example").unwrap();
+        let trigger = Event::new("test.trigger", "test", Uuid::now_v7(), None, json!({}));
+        let execution = runtime
+            .execute(
+                &catalog,
+                &ToolCall {
+                    call_id: "call-1".into(),
+                    name: "example.read".into(),
+                    arguments: json!({}),
+                },
+                &ToolContext {
+                    trigger: trigger.clone(),
+                    current_event: trigger.clone(),
+                    correlation_id: trigger.correlation_id,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(execution.result["value"], "old");
+        assert_ne!(catalog.generation, runtime.catalog().unwrap().generation);
     }
 }

@@ -1,4 +1,8 @@
-use std::{collections::VecDeque, sync::Arc, time::Instant};
+use std::{
+    collections::{BTreeMap, HashSet, VecDeque},
+    sync::Arc,
+    time::Instant,
+};
 
 use anyhow::{Context, Result};
 use futures::{StreamExt, stream::FuturesUnordered};
@@ -7,31 +11,25 @@ use uuid::Uuid;
 
 use crate::{
     catalog::ModelCatalog,
-    event::{ConversationMessage, Event, LogEntry},
+    context::{compile_context_items, current_event_input},
+    event::{Event, LogEntry},
     model::ModelClient,
     store::SharedEventStore,
-    tool::{ToolCall, ToolContext, ToolRuntime, domain_tool_name},
+    tool::{ToolCall, ToolCatalog, ToolContext, ToolRuntime, domain_tool_name},
 };
 
 pub struct Reactor {
     store: SharedEventStore,
     model: ModelClient,
     tools: Arc<ToolRuntime>,
-    context_message_limit: usize,
 }
 
 impl Reactor {
-    pub fn new(
-        store: SharedEventStore,
-        model: ModelClient,
-        tools: Arc<ToolRuntime>,
-        context_message_limit: usize,
-    ) -> Self {
+    pub fn new(store: SharedEventStore, model: ModelClient, tools: Arc<ToolRuntime>) -> Self {
         Self {
             store,
             model,
             tools,
-            context_message_limit,
         }
     }
 
@@ -72,14 +70,7 @@ impl Reactor {
         Ok(())
     }
 
-    pub async fn react(
-        &self,
-        trigger: &Event,
-        mut conversation: Vec<ConversationMessage>,
-    ) -> Result<()> {
-        if conversation.len() > self.context_message_limit {
-            conversation.drain(..conversation.len() - self.context_message_limit);
-        }
+    pub async fn react(&self, trigger: &Event) -> Result<()> {
         let reaction_id = trigger.correlation_id;
         self.log(LogEntry::new(
             "info",
@@ -91,18 +82,110 @@ impl Reactor {
             json!({ "trigger_event": trigger }),
         ))?;
 
-        let definitions = self.tools.definitions();
-        let mut initial_input = self.model.conversation_input(&conversation);
-        initial_input.push(current_event_input(trigger)?);
-        let mut queue = VecDeque::from([PendingModelEvent {
-            event: trigger.clone(),
-            input: initial_input,
-        }]);
+        let catalog = self.tools.catalog()?;
+        let context_started = Instant::now();
+        let context_hooks = self.tools.context_hooks(trigger)?;
+        let mut extension_input = Vec::new();
+        let mut context_hook_logs = Vec::new();
+        for execution in context_hooks {
+            let attempted = execution
+                .contribution
+                .as_ref()
+                .map(|contribution| compile_context_items(&self.store, &contribution.items))
+                .transpose();
+            let (level, name, payload) = match attempted {
+                Ok(Some(compiled)) => {
+                    extension_input.extend(compiled.input);
+                    (
+                        "debug",
+                        "context.hook.completed",
+                        json!({
+                            "extension": execution.extension_id,
+                            "hook": execution.hook,
+                            "duration_ms": execution.duration_ms,
+                            "items_returned": execution.contribution.as_ref().map(|value| value.items.len()).unwrap_or(0),
+                            "source_event_count": compiled.source_event_count,
+                            "duplicate_items_omitted": compiled.duplicate_items_omitted,
+                            "rendered_bytes": compiled.rendered_bytes,
+                            "estimated_tokens": compiled.estimated_tokens,
+                        }),
+                    )
+                }
+                Ok(None) => (
+                    "warn",
+                    "context.hook.failed",
+                    json!({
+                        "extension": execution.extension_id,
+                        "hook": execution.hook,
+                        "duration_ms": execution.duration_ms,
+                        "error": execution.error,
+                    }),
+                ),
+                Err(error) => (
+                    "warn",
+                    "context.hook.failed",
+                    json!({
+                        "extension": execution.extension_id,
+                        "hook": execution.hook,
+                        "duration_ms": execution.duration_ms,
+                        "error": error.to_string(),
+                    }),
+                ),
+            };
+            context_hook_logs.push(payload.clone());
+            self.log(LogEntry::new(
+                level,
+                "context",
+                name,
+                reaction_id,
+                Some(trigger.id),
+                trigger.correlation_id,
+                payload,
+            ))?;
+        }
+        let context_preparation_duration_ms = context_started.elapsed().as_millis();
+        let suggestion_hooks = self.tools.tool_suggestion_hooks(trigger)?;
+        let mut suggestions = BTreeMap::new();
+        for execution in suggestion_hooks {
+            for suggestion in &execution.suggestions {
+                suggestions
+                    .entry(suggestion.tool.clone())
+                    .or_insert_with(|| ToolCandidateOrigin::ExtensionSuggestion {
+                        extension: execution.extension_id.clone(),
+                        hook: execution.hook.clone(),
+                        reason: suggestion.reason.clone(),
+                    });
+            }
+            self.log(LogEntry::new(
+                if execution.error.is_some() {
+                    "warn"
+                } else {
+                    "debug"
+                },
+                "tool",
+                if execution.error.is_some() {
+                    "tool.suggestion_hook.failed"
+                } else {
+                    "tool.suggestion_hook.completed"
+                },
+                reaction_id,
+                Some(trigger.id),
+                trigger.correlation_id,
+                json!({
+                    "extension": execution.extension_id,
+                    "hook": execution.hook,
+                    "duration_ms": execution.duration_ms,
+                    "suggestions": execution.suggestions,
+                    "error": execution.error,
+                }),
+            ))?;
+        }
+        let mut tool_chain = ToolChainState::new(suggestions);
+        let mut queue = VecDeque::from([trigger.clone()]);
         let mut processed_event_ids = Vec::new();
         let mut final_event_id = trigger.id;
 
-        while let Some(pending) = queue.pop_front() {
-            let current_event = pending.event;
+        while let Some(current_event) = queue.pop_front() {
             final_event_id = current_event.id;
             processed_event_ids.push(current_event.id);
             self.log(LogEntry::new(
@@ -119,7 +202,57 @@ impl Reactor {
                 }),
             ))?;
 
-            let request = self.model.request_body(&pending.input, &definitions);
+            let context_rendering_started = Instant::now();
+            let mut input = extension_input.clone();
+            input.push(current_event_input(&self.store, &current_event)?);
+            let input_bytes = serde_json::to_vec(&input)?.len();
+            let context_log = LogEntry::new(
+                "debug",
+                "context",
+                "context.compiled",
+                reaction_id,
+                Some(current_event.id),
+                trigger.correlation_id,
+                json!({
+                    "root_trigger_event_id": trigger.id,
+                    "current_event_id": current_event.id,
+                    "extension_hook_count": context_hook_logs.len(),
+                    "extension_items": extension_input.len(),
+                    "rendered_bytes": input_bytes,
+                    "estimated_tokens": input_bytes.div_ceil(4),
+                    "hook_preparation_duration_ms": context_preparation_duration_ms,
+                    "rendering_duration_ms": context_rendering_started.elapsed().as_millis(),
+                }),
+            );
+            let context_log_id = context_log.id;
+            self.log(context_log)?;
+
+            let surface_started = Instant::now();
+            let surface = tool_chain.prepare_surface(&catalog)?;
+            let surface_log = LogEntry::new(
+                "debug",
+                "tool",
+                "tool.surface.prepared",
+                reaction_id,
+                Some(current_event.id),
+                trigger.correlation_id,
+                json!({
+                    "root_trigger_event_id": trigger.id,
+                    "current_event_id": current_event.id,
+                    "catalog_generation": catalog.generation,
+                    "invocation_index": tool_chain.invocation_index,
+                    "duration_ms": surface_started.elapsed().as_millis(),
+                    "advertised": surface.definitions.len(),
+                    "pruned": surface.records.iter().filter(|record| record.decision == "pruned_unused").count(),
+                    "advertised_schema_bytes": surface.advertised_schema_bytes,
+                    "estimated_advertised_schema_tokens": surface.advertised_schema_bytes.div_ceil(4),
+                    "tools": surface.records,
+                }),
+            );
+            let surface_log_id = surface_log.id;
+            self.log(surface_log)?;
+
+            let request = self.model.request_body(&input, &surface.definitions);
             let model_span_id = Uuid::now_v7().to_string();
             let mut started_log = LogEntry::new(
                 "info",
@@ -131,7 +264,9 @@ impl Reactor {
                 json!({
                     "provider": "openai-codex", "model": self.model.model_name(),
                     "endpoint": self.model.endpoint(), "root_trigger_event_id": trigger.id,
-                    "current_event_id": current_event.id, "request": request
+                    "current_event_id": current_event.id, "context_log_id": context_log_id,
+                    "tool_surface_log_id": surface_log_id,
+                    "tool_catalog_generation": catalog.generation, "request": request
                 }),
             );
             started_log.span_id = Some(model_span_id.clone());
@@ -151,6 +286,7 @@ impl Reactor {
                         trigger.correlation_id,
                         json!({
                             "error": error.to_string(), "started_log_id": started_log_id,
+                            "context_log_id": context_log_id, "tool_surface_log_id": surface_log_id,
                             "duration_ms": invocation_started_at.elapsed().as_millis()
                         }),
                     );
@@ -160,10 +296,13 @@ impl Reactor {
                 }
             };
             for call in &mut response.tool_calls {
-                call.name = domain_tool_name(&call.name, &definitions)
-                    .with_context(|| format!("model called unknown tool '{}'", call.name))?
+                call.name = domain_tool_name(&call.name, &surface.definitions)
+                    .with_context(|| {
+                        format!("model called tool '{}' that was not advertised", call.name)
+                    })?
                     .to_owned();
             }
+            tool_chain.observe_calls(&response.tool_calls);
 
             let estimated_cost = response
                 .usage
@@ -181,7 +320,9 @@ impl Reactor {
                     "model": response.model, "content": &response.content,
                     "tool_calls": &response.tool_calls, "output_items": &response.output_items,
                     "provider_response": &response.provider_response,
-                    "usage": &response.usage,
+                    "usage": &response.usage, "context_log_id": context_log_id,
+                    "tool_surface_log_id": surface_log_id,
+                    "tool_catalog_generation": catalog.generation,
                     "estimated_cost": &estimated_cost,
                     "duration_ms": invocation_started_at.elapsed().as_millis()
                 }),
@@ -209,8 +350,10 @@ impl Reactor {
                     &current_event,
                     completed_log_id,
                     &response.tool_calls,
+                    catalog.clone(),
                 )
                 .await?;
+            tool_chain.observe_results(&batch.results);
             self.log(LogEntry::new(
                 "debug",
                 "reactor",
@@ -224,20 +367,7 @@ impl Reactor {
                     "next_event_id": batch.completed_event.id
                 }),
             ))?;
-
-            let mut next_input = self.model.conversation_input(&conversation);
-            next_input.extend(response.output_items);
-            for result in &batch.results {
-                next_input.push(json!({
-                    "type": "function_call_output", "call_id": result.call.call_id,
-                    "output": serde_json::to_string(&result.output)?
-                }));
-            }
-            next_input.push(current_event_input(&batch.completed_event)?);
-            queue.push_back(PendingModelEvent {
-                event: batch.completed_event,
-                input: next_input,
-            });
+            queue.push_back(batch.completed_event);
         }
 
         self.log(LogEntry::new(
@@ -249,7 +379,8 @@ impl Reactor {
             trigger.correlation_id,
             json!({
                 "reason": "event_queue_empty",
-                "processed_model_event_ids": processed_event_ids
+                "processed_model_event_ids": processed_event_ids,
+                "tool_usage": tool_chain.usage,
             }),
         ))?;
         Ok(())
@@ -261,6 +392,7 @@ impl Reactor {
         current_event: &Event,
         model_log_id: Uuid,
         calls: &[ToolCall],
+        catalog: Arc<ToolCatalog>,
     ) -> Result<BatchExecution> {
         let batch_id = Uuid::now_v7();
         let mut batch_log = LogEntry::new(
@@ -287,7 +419,8 @@ impl Reactor {
                 json!({
                     "batch_id": batch_id, "action_id": action_id, "index": index,
                     "tool_call_id": call.call_id, "tool": call.name,
-                    "arguments": call.arguments, "model_log_id": model_log_id
+                    "arguments": call.arguments, "model_log_id": model_log_id,
+                    "tool_catalog_generation": catalog.generation
                 }),
             );
             self.append(&requested)?;
@@ -317,15 +450,26 @@ impl Reactor {
         for (index, action_id, call, requested) in actions {
             let tools = self.tools.clone();
             let context = context.clone();
+            let catalog = catalog.clone();
             pending.push(async move {
-                let result = tools.execute(&call, &context).await;
-                (index, action_id, call, requested, result)
+                let started = Instant::now();
+                let result = tools.execute(&catalog, &call, &context).await;
+                (
+                    index,
+                    action_id,
+                    call,
+                    requested,
+                    started.elapsed().as_millis(),
+                    result,
+                )
             });
         }
 
         let mut ordered: Vec<Option<ActionResult>> = (0..calls.len()).map(|_| None).collect();
         let mut result_event_ids = vec![Uuid::nil(); calls.len()];
-        while let Some((index, action_id, call, requested, execution)) = pending.next().await {
+        while let Some((index, action_id, call, requested, duration_ms, execution)) =
+            pending.next().await
+        {
             let (output, result_event, level, log_payload) = match execution {
                 Ok(execution) => {
                     let mut effect_ids = Vec::new();
@@ -350,7 +494,8 @@ impl Reactor {
                         json!({
                             "batch_id": batch_id, "action_id": action_id, "index": index,
                             "tool_call_id": call.call_id, "tool": call.name,
-                            "result": execution.result, "effect_event_ids": effect_ids
+                            "result": execution.result, "effect_event_ids": effect_ids,
+                            "tool_catalog_generation": catalog.generation
                         }),
                     );
                     (
@@ -370,7 +515,8 @@ impl Reactor {
                         json!({
                             "batch_id": batch_id, "action_id": action_id, "index": index,
                             "tool_call_id": call.call_id, "tool": call.name,
-                            "error": { "message": error.to_string() }
+                            "error": { "message": error.to_string() },
+                            "tool_catalog_generation": catalog.generation
                         }),
                     );
                     (
@@ -390,13 +536,22 @@ impl Reactor {
                 root_trigger.correlation_id,
                 Some(result_event.id),
                 root_trigger.correlation_id,
-                log_payload,
+                json!({
+                    "tool": call.name,
+                    "duration_ms": duration_ms,
+                    "tool_catalog_generation": catalog.generation,
+                    "details": log_payload,
+                }),
             );
             completed_log.batch_id = Some(batch_id.to_string());
             completed_log.action_id = Some(action_id.to_string());
             completed_log.tool_call_id = Some(call.call_id.clone());
             self.log(completed_log)?;
-            ordered[index] = Some(ActionResult { call, output });
+            ordered[index] = Some(ActionResult {
+                call,
+                output,
+                result_event_id: result_event.id,
+            });
         }
 
         let results = ordered
@@ -452,28 +607,182 @@ impl Reactor {
     }
 }
 
-struct PendingModelEvent {
-    event: Event,
-    input: Vec<Value>,
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "source", rename_all = "snake_case")]
+enum ToolCandidateOrigin {
+    Core,
+    ExtensionSuggestion {
+        extension: String,
+        hook: String,
+        reason: Option<String>,
+    },
+    ToolSearch {
+        result_event_id: Uuid,
+    },
+    UsedEarlier,
+}
+
+#[derive(Debug, Clone)]
+struct DiscoveredTool {
+    result_event_id: Uuid,
+    advertised: bool,
+}
+
+#[derive(Debug, Default, serde::Serialize)]
+struct ToolUsage {
+    advertised: u64,
+    called: u64,
+    succeeded: u64,
+    failed: u64,
+    estimated_schema_tokens: u64,
+}
+
+struct ToolChainState {
+    suggestions: BTreeMap<String, ToolCandidateOrigin>,
+    discovered: BTreeMap<String, DiscoveredTool>,
+    used: HashSet<String>,
+    usage: BTreeMap<String, ToolUsage>,
+    invocation_index: u64,
+}
+
+#[derive(serde::Serialize)]
+struct ToolSurfaceRecord {
+    tool: String,
+    origin: ToolCandidateOrigin,
+    decision: String,
+    schema_bytes: usize,
+    estimated_schema_tokens: usize,
+}
+
+struct ToolSurface {
+    definitions: Vec<crate::tool::ToolDefinition>,
+    records: Vec<ToolSurfaceRecord>,
+    advertised_schema_bytes: usize,
+}
+
+impl ToolChainState {
+    fn new(suggestions: BTreeMap<String, ToolCandidateOrigin>) -> Self {
+        Self {
+            suggestions,
+            discovered: BTreeMap::new(),
+            used: HashSet::new(),
+            usage: BTreeMap::new(),
+            invocation_index: 0,
+        }
+    }
+
+    fn prepare_surface(&mut self, catalog: &ToolCatalog) -> Result<ToolSurface> {
+        self.invocation_index += 1;
+        let mut candidates =
+            BTreeMap::from([("habibi.tools.search".to_owned(), ToolCandidateOrigin::Core)]);
+        candidates.extend(self.suggestions.clone());
+        for tool in &self.used {
+            candidates
+                .entry(tool.clone())
+                .or_insert(ToolCandidateOrigin::UsedEarlier);
+        }
+        for (tool, discovery) in &self.discovered {
+            if !discovery.advertised || self.used.contains(tool) {
+                candidates.insert(
+                    tool.clone(),
+                    ToolCandidateOrigin::ToolSearch {
+                        result_event_id: discovery.result_event_id,
+                    },
+                );
+            }
+        }
+
+        let mut definitions = Vec::new();
+        let mut records = Vec::new();
+        let mut advertised_schema_bytes = 0;
+        for (name, origin) in candidates {
+            let definition = catalog
+                .definition(&name)
+                .with_context(|| format!("tool candidate '{name}' is not registered"))?;
+            let schema_bytes = serde_json::to_vec(&definition)?.len();
+            advertised_schema_bytes += schema_bytes;
+            let estimated_schema_tokens = schema_bytes.div_ceil(4);
+            let usage = self.usage.entry(name.clone()).or_default();
+            usage.advertised += 1;
+            usage.estimated_schema_tokens += estimated_schema_tokens as u64;
+            records.push(ToolSurfaceRecord {
+                tool: name,
+                origin,
+                decision: "advertised".into(),
+                schema_bytes,
+                estimated_schema_tokens,
+            });
+            definitions.push(definition);
+        }
+        for (name, discovery) in &mut self.discovered {
+            if !discovery.advertised {
+                discovery.advertised = true;
+            } else if !self.used.contains(name)
+                && !records.iter().any(|record| record.tool == *name)
+            {
+                records.push(ToolSurfaceRecord {
+                    tool: name.clone(),
+                    origin: ToolCandidateOrigin::ToolSearch {
+                        result_event_id: discovery.result_event_id,
+                    },
+                    decision: "pruned_unused".into(),
+                    schema_bytes: 0,
+                    estimated_schema_tokens: 0,
+                });
+            }
+        }
+        Ok(ToolSurface {
+            definitions,
+            records,
+            advertised_schema_bytes,
+        })
+    }
+
+    fn observe_calls(&mut self, calls: &[ToolCall]) {
+        for call in calls {
+            self.used.insert(call.name.clone());
+            self.usage.entry(call.name.clone()).or_default().called += 1;
+        }
+    }
+
+    fn observe_results(&mut self, results: &[ActionResult]) {
+        for result in results {
+            let usage = self.usage.entry(result.call.name.clone()).or_default();
+            if result.output.get("ok").and_then(Value::as_bool) == Some(true) {
+                usage.succeeded += 1;
+            } else {
+                usage.failed += 1;
+            }
+            if result.call.name == "habibi.tools.search"
+                && let Some(found) = result
+                    .output
+                    .pointer("/result/tools")
+                    .and_then(Value::as_array)
+            {
+                for tool in found {
+                    if let Some(name) = tool.get("tool").and_then(Value::as_str) {
+                        self.discovered.insert(
+                            name.to_owned(),
+                            DiscoveredTool {
+                                result_event_id: result.result_event_id,
+                                advertised: false,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 struct ActionResult {
     call: ToolCall,
     output: Value,
+    result_event_id: Uuid,
 }
 struct BatchExecution {
     results: Vec<ActionResult>,
     completed_event: Event,
-}
-
-fn current_event_input(event: &Event) -> Result<Value> {
-    Ok(json!({
-        "role": "developer",
-        "content": [{
-            "type": "input_text",
-            "text": format!("Current Habibi event being processed:\n{}", serde_json::to_string_pretty(event)?)
-        }]
-    }))
 }
 
 fn validate_effect_namespace(tool_name: &str, event_type: &str) -> Result<()> {
@@ -485,4 +794,44 @@ fn validate_effect_namespace(tool_name: &str, event_type: &str) -> Result<()> {
         anyhow::bail!("tool '{tool_name}' cannot emit event type '{event_type}'");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{extension::ExtensionManager, store::EventStore};
+
+    #[test]
+    fn prunes_searched_but_unused_tools_after_one_advertisement() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = EventStore::open(":memory:").unwrap().shared();
+        let extensions = Arc::new(ExtensionManager::load(directory.path(), store.clone()).unwrap());
+        let runtime = ToolRuntime::new(store, extensions).unwrap();
+        let catalog = runtime.catalog().unwrap();
+        let mut chain = ToolChainState::new(BTreeMap::new());
+        chain.discovered.insert(
+            "habibi.events.get".into(),
+            DiscoveredTool {
+                result_event_id: Uuid::now_v7(),
+                advertised: false,
+            },
+        );
+        let first = chain.prepare_surface(&catalog).unwrap();
+        assert!(
+            first
+                .definitions
+                .iter()
+                .any(|definition| definition.name == "habibi.events.get")
+        );
+        let second = chain.prepare_surface(&catalog).unwrap();
+        assert!(
+            !second
+                .definitions
+                .iter()
+                .any(|definition| definition.name == "habibi.events.get")
+        );
+        assert!(second.records.iter().any(|record| {
+            record.tool == "habibi.events.get" && record.decision == "pruned_unused"
+        }));
+    }
 }

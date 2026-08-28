@@ -1,8 +1,8 @@
 # Habibi extensions
 
 Extensions are versioned Lua packages installed beneath `HABIBI_EXTENSIONS_DIR`. Each extension
-has its own HTTP namespace and KV namespace. The first API version is deliberately small and
-synchronous.
+has its own HTTP namespace and KV namespace. API version 2 provides typed context hooks and
+separate tool-suggestion hooks while remaining deliberately small and synchronous.
 
 Install from a local package or Git repository:
 
@@ -36,23 +36,27 @@ id = "example"
 name = "Example"
 version = "0.1.0"
 description = "What this extension adds to Habibi."
-api_version = 1
+api_version = 2
 
 [capabilities]
 web = true
 kv = true
 events = true
 tools = true
+context = true
 
 [web]
 static_dir = "web"
 ```
 
 Capabilities are optional and default to false. An extension receives only the corresponding
-host APIs. Lua runs without the `io`, `os`, `package`, or `debug` standard libraries.
+host APIs. Lua runs without the `io`, `os`, `package`, or `debug` standard libraries. API version 2
+replaces the former reaction-context callback; packages must use `habibi.context.register` and may
+use `habibi.tools.suggest`. The obsolete callback is not retained.
 
-Habibi also infers provided features from registered routes, static web content, and reaction
-handlers. These details appear at `/extensions`, where extensions can be enabled or disabled.
+Habibi also infers provided features from registered routes, static web content, context hooks,
+and tool suggestion hooks. These details appear at `/extensions`, where extensions can be enabled
+or disabled.
 An extension with static web content receives an **Open** link to `/extensions/{id}/`. Installed
 extensions are fully trusted local code; capabilities make behavior visible during review and
 control which Lua host APIs are exposed, but they are not a hostile-code security boundary.
@@ -108,6 +112,25 @@ into a batch. The resulting `action.batch.completed` event is queued with all re
 call order and is processed as the next event. There is no internal turn limit: the reaction
 settles when the event queue is empty.
 
+Only `habibi.tools.search`, event-relevant extension suggestions, tools discovered in the current
+causal chain, and tools already used in that chain are advertised to a model invocation. Extensions
+can suggest their own tools separately from context creation:
+
+```lua
+habibi.tools.suggest("example-created", function(trigger)
+  if trigger.event_type ~= "example.item.created" then return habibi.array({}) end
+  return habibi.array({{
+    tool = "example.lookup",
+    reason = "New example items commonly need enrichment."
+  }})
+end)
+```
+
+Suggestions are discovery hints, not authorization. Dangerous tools must enforce confirmation and
+argument policy when executed. Tool definitions and handlers are pinned to one validated catalog
+generation for the complete reaction chain. Tool advertisements, calls, outcomes, schema-token
+estimates, and execution durations are recorded in logs and aggregated at `/stats`.
+
 ## Emitting events and requesting reactions
 
 A route can ask the host to append one event:
@@ -122,16 +145,31 @@ return {
 }
 ```
 
-Every emitted event enters the reactor after it is appended. The extension registers a context
-mapper; user-visible effects are performed by model tools:
+Every emitted event enters the reactor after it is appended. Core supplies a stable system prompt
+and the current event. An extension with the `context` capability may contribute its own event
+references or message projections. Hooks run deterministically by extension ID and hook name;
+failed hooks are logged and skipped without stopping other extensions.
 
 ```lua
-habibi.reactions.context(function(trigger)
-  return habibi.array({
-    { role = "user", content = trigger.payload.content }
-  })
+habibi.context.register("example-history", function(trigger)
+  if not trigger.payload.content then return { items = habibi.array({}) } end
+  return {
+    items = habibi.array({{
+      type = "message",
+      role = "user",
+      content = trigger.payload.content,
+      source_event_id = trigger.id
+    }})
+  }
 end)
 ```
+
+An event contribution uses `{ type = "event", event_id = "..." }`. Message roles are `user` or
+`assistant` and every message must reference an existing immutable source event. Extensions can
+select and render only their own returned contributions; they cannot rewrite core input or another
+extension's contribution. Exact duplicate projections from one hook are omitted, conflicting
+projections are rejected, and each hook is bounded to 500 items and 2 MiB of rendered input.
+User-visible effects are performed by model tools.
 
 All action requests, results, tool effects, batch barriers, and operational logs share the
 trigger's correlation ID and are connected through causation IDs and result references.

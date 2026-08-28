@@ -50,6 +50,7 @@ pub fn scan_extension(directory: &Path, manifest: &ExtensionManifest) -> Result<
         ("kv", capabilities.kv),
         ("events", capabilities.events),
         ("tools", capabilities.tools),
+        ("context", capabilities.context),
     ] {
         if enabled {
             declared_capabilities.push(name.to_owned());

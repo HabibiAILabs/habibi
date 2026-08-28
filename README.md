@@ -21,14 +21,16 @@
 </p>
 
 Habibi is a local, event-sourced AI runtime built around one continuous conversation.
-There are no core sessions: every incoming event joins one durable history, and each model
-invocation receives context selected from that history.
+There are no core sessions: every incoming event joins one durable history. Each model invocation
+processes one current event; extensions may add their own event or message projections through
+measured context hooks.
 
 Habibi's core provides:
 
 - An append-only SQLite event store
 - A native OpenAI ChatGPT/Codex OAuth model transport
 - A queue-driven event reactor with one model invocation per processed event
+- A searchable, chain-scoped tool registry with measured suggestions, advertisements, calls, and outcomes
 - A local Axum web server
 - Capability-scoped Lua extensions
 - Namespaced web routes and JSON KV storage for extensions
@@ -70,7 +72,6 @@ cp .env.example .env
 | `HABIBI_DB` | no | `habibi.db` |
 | `HABIBI_BIND` | no | `127.0.0.1:8787` |
 | `HABIBI_EXTENSIONS_DIR` | no | `extensions` |
-| `HABIBI_CONTEXT_MESSAGES` | no | `40` |
 
 ## Run
 
@@ -123,7 +124,8 @@ Model requests/responses and execution diagnostics are logs rather than reactor 
 reaction, trigger, correlation, batch, action, tool call, time, payload text, and sequence. Model
 logs include exact requests, native output items, parsed tool calls, token usage, cache reads and
 writes when reported by the provider, and per-invocation cost estimates when pricing is configured.
-`GET /api/stats` and `/stats` aggregate these values globally and by model. Pricing comes from
+`GET /api/stats` and `/stats` aggregate model usage globally and by model, plus tool advertisements,
+distinct chains, calls, outcomes, schema-token estimates, and execution duration. Pricing comes from
 `model-catalog.json`, selected by provider and model ID. The Stats page can refresh the catalog from
 models.dev through `POST /api/models/refresh`; `GET /api/models` exposes the current catalog. Set
 `HABIBI_MODEL_CATALOG` or `HABIBI_MODEL_CATALOG_URL` to use custom storage or a different source.
@@ -131,9 +133,10 @@ Every completed invocation stores its exact catalog entry and rates, so later re
 rewrite historical estimates. See [`docs/model-catalog.md`](docs/model-catalog.md) for the format
 and refresh semantics.
 
+The always-advertised `habibi.tools.search` tool discovers matching built-in and extension tools.
 Built-in tools can get/query events or logs, create semantic links between events, and traverse
-those links. The chat extension provides session lookup, keyword message search, and user-visible
-message delivery tools.
+those links. The chat extension suggests only its event-relevant reply tool; other chat tools remain
+searchable through the registry.
 
 ## Chat API
 

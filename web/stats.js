@@ -31,6 +31,19 @@ async function loadStats() {
     number.format(model.output_tokens), number.format(model.total_tokens), cost(model.estimated_cost_usd),
   ])));
   if (!usage.models.length) emptyRow("#model-usage", 8, "No completed model invocations yet.");
+  $("#tool-usage").replaceChildren(...usage.tools.map((tool) => row([
+    tool.tool,
+    number.format(tool.advertised_invocations),
+    number.format(tool.chains_advertised),
+    number.format(tool.calls),
+    number.format(tool.chains_used),
+    tool.advertised_invocations ? `${((tool.calls / tool.advertised_invocations) * 100).toFixed(1)}%` : "—",
+    number.format(tool.succeeded),
+    number.format(tool.failed),
+    number.format(tool.estimated_schema_tokens),
+    tool.average_duration_ms == null ? "—" : `${tool.average_duration_ms.toFixed(1)} ms`,
+  ])));
+  if (!usage.tools.length) emptyRow("#tool-usage", 10, "No tool advertisements or calls yet.");
 }
 
 async function loadCatalog() {

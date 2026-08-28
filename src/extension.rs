@@ -6,6 +6,7 @@ use std::{
         Arc, Mutex, RwLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
+    time::Instant,
 };
 
 use anyhow::{Context, Result, bail};
@@ -15,12 +16,14 @@ use mlua::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::{
-    event::{ConversationMessage, Event},
+    context::ContextContribution,
+    event::Event,
     installer::{ExtensionInstaller, InstallMetadata},
     store::{SharedEventStore, StoreEventQuery},
-    tool::{ToolCall, ToolContext, ToolDefinition, ToolExecution},
+    tool::{ToolCall, ToolContext, ToolDefinition, ToolExecution, provider_tool_name},
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -46,6 +49,8 @@ pub struct ExtensionCapabilities {
     pub events: bool,
     #[serde(default)]
     pub tools: bool,
+    #[serde(default)]
+    pub context: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -106,6 +111,35 @@ struct RegisteredTool {
     handler: RegistryKey,
 }
 
+struct RegisteredHook {
+    name: String,
+    handler: RegistryKey,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ToolSuggestion {
+    pub tool: String,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ContextHookExecution {
+    pub extension_id: String,
+    pub hook: String,
+    pub duration_ms: u128,
+    pub contribution: Option<ContextContribution>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolSuggestionHookExecution {
+    pub extension_id: String,
+    pub hook: String,
+    pub duration_ms: u128,
+    pub suggestions: Vec<ToolSuggestion>,
+    pub error: Option<String>,
+}
+
 struct RegisteredRoute {
     method: String,
     path: String,
@@ -117,11 +151,13 @@ struct LuaState {
     instruction_budget: Arc<AtomicU64>,
     routes: Vec<RegisteredRoute>,
     tools: Vec<RegisteredTool>,
-    context_handler: Option<RegistryKey>,
+    context_hooks: Vec<RegisteredHook>,
+    tool_suggestion_hooks: Vec<RegisteredHook>,
 }
 
 pub struct LoadedExtension {
     pub manifest: ExtensionManifest,
+    pub generation: String,
     static_files: HashMap<String, (Vec<u8>, String)>,
     store: SharedEventStore,
     enabled: AtomicBool,
@@ -131,11 +167,10 @@ pub struct LoadedExtension {
 impl LoadedExtension {
     pub(crate) fn load(directory: &Path, store: SharedEventStore) -> Result<Self> {
         let manifest_path = directory.join("extension.toml");
-        let manifest: ExtensionManifest = toml::from_str(
-            &fs::read_to_string(&manifest_path)
-                .with_context(|| format!("failed to read {}", manifest_path.display()))?,
-        )
-        .with_context(|| format!("invalid extension manifest {}", manifest_path.display()))?;
+        let manifest_source = fs::read_to_string(&manifest_path)
+            .with_context(|| format!("failed to read {}", manifest_path.display()))?;
+        let manifest: ExtensionManifest = toml::from_str(&manifest_source)
+            .with_context(|| format!("invalid extension manifest {}", manifest_path.display()))?;
         validate_manifest(&manifest)?;
         let enabled = store
             .lock()
@@ -168,7 +203,8 @@ impl LoadedExtension {
         }
         let registered_routes = Arc::new(Mutex::new(Vec::new()));
         let registered_tools = Arc::new(Mutex::new(Vec::new()));
-        let context_handler = Arc::new(Mutex::new(None));
+        let context_hooks = Arc::new(Mutex::new(Vec::new()));
+        let tool_suggestion_hooks = Arc::new(Mutex::new(Vec::new()));
         let habibi = lua.create_table()?;
         habibi.set(
             "id",
@@ -211,6 +247,23 @@ impl LoadedExtension {
                     Ok(())
                 })?,
             )?;
+            let suggestion_registry = tool_suggestion_hooks.clone();
+            tools.set(
+                "suggest",
+                lua.create_function(move |lua, (name, handler): (String, Function)| {
+                    validate_hook_name(&name).map_err(mlua::Error::external)?;
+                    suggestion_registry
+                        .lock()
+                        .map_err(|_| {
+                            mlua::Error::external("tool suggestion registry lock poisoned")
+                        })?
+                        .push(RegisteredHook {
+                            name,
+                            handler: lua.create_registry_value(handler)?,
+                        });
+                    Ok(())
+                })?,
+            )?;
             habibi.set("tools", tools)?;
         }
 
@@ -241,19 +294,25 @@ impl LoadedExtension {
             habibi.set("web", web)?;
         }
 
-        let reactions = lua.create_table()?;
-        let context_slot = context_handler.clone();
-        reactions.set(
-            "context",
-            lua.create_function(move |lua, handler: Function| {
-                *context_slot
-                    .lock()
-                    .map_err(|_| mlua::Error::external("reaction registry lock poisoned"))? =
-                    Some(lua.create_registry_value(handler)?);
-                Ok(())
-            })?,
-        )?;
-        habibi.set("reactions", reactions)?;
+        if manifest.capabilities.context {
+            let context = lua.create_table()?;
+            let hook_registry = context_hooks.clone();
+            context.set(
+                "register",
+                lua.create_function(move |lua, (name, handler): (String, Function)| {
+                    validate_hook_name(&name).map_err(mlua::Error::external)?;
+                    hook_registry
+                        .lock()
+                        .map_err(|_| mlua::Error::external("context hook registry lock poisoned"))?
+                        .push(RegisteredHook {
+                            name,
+                            handler: lua.create_registry_value(handler)?,
+                        });
+                    Ok(())
+                })?,
+            )?;
+            habibi.set("context", context)?;
+        }
         lua.globals().set("habibi", habibi)?;
 
         let entrypoint = directory.join("extension.lua");
@@ -295,13 +354,25 @@ impl LoadedExtension {
                 );
             }
         }
-        let context_handler = context_handler
+        let mut context_hooks: Vec<RegisteredHook> = context_hooks
             .lock()
-            .map_err(|_| anyhow::anyhow!("context registry lock poisoned"))?
-            .take();
+            .map_err(|_| anyhow::anyhow!("context hook registry lock poisoned"))?
+            .drain(..)
+            .collect();
+        let mut tool_suggestion_hooks: Vec<RegisteredHook> = tool_suggestion_hooks
+            .lock()
+            .map_err(|_| anyhow::anyhow!("tool suggestion registry lock poisoned"))?
+            .drain(..)
+            .collect();
+        validate_unique_hooks(&manifest.id, "context", &context_hooks)?;
+        validate_unique_hooks(&manifest.id, "tool suggestion", &tool_suggestion_hooks)?;
+        context_hooks.sort_by(|left, right| left.name.cmp(&right.name));
+        tool_suggestion_hooks.sort_by(|left, right| left.name.cmp(&right.name));
         let static_files = load_static_files(directory, &manifest)?;
+        let generation = extension_generation(&manifest_source, &source, &static_files);
         Ok(Self {
             manifest,
+            generation,
             static_files,
             store,
             enabled: AtomicBool::new(enabled),
@@ -310,7 +381,8 @@ impl LoadedExtension {
                 instruction_budget,
                 routes,
                 tools,
-                context_handler,
+                context_hooks,
+                tool_suggestion_hooks,
             }),
         })
     }
@@ -357,23 +429,109 @@ impl LoadedExtension {
         Ok(Some(state.lua.from_value(result)?))
     }
 
-    pub fn compile_context(&self, trigger: &Event) -> Result<Vec<ConversationMessage>> {
+    pub fn run_context_hooks(&self, trigger: &Event) -> Result<Vec<ContextHookExecution>> {
         if !self.is_enabled() {
-            bail!("extension '{}' is disabled", self.manifest.id);
+            return Ok(Vec::new());
         }
         let state = self
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("extension '{}' lock poisoned", self.manifest.id))?;
-        let key = state
-            .context_handler
-            .as_ref()
-            .context("extension did not register a reaction context handler")?;
-        state.instruction_budget.store(100, Ordering::Relaxed);
-        let handler: Function = state.lua.registry_value(key)?;
-        let trigger = state.lua.to_value(trigger)?;
-        let result: LuaValue = handler.call(trigger)?;
-        Ok(state.lua.from_value(result)?)
+        let mut executions = Vec::new();
+        for hook in &state.context_hooks {
+            state.instruction_budget.store(100, Ordering::Relaxed);
+            let started = Instant::now();
+            let attempted: Result<ContextContribution> = (|| {
+                let handler: Function = state.lua.registry_value(&hook.handler)?;
+                let argument = state.lua.to_value(trigger)?;
+                let result: LuaValue = handler.call(argument).with_context(|| {
+                    format!(
+                        "extension '{}' context hook '{}' failed",
+                        self.manifest.id, hook.name
+                    )
+                })?;
+                Ok(state.lua.from_value(result)?)
+            })();
+            let (contribution, error) = match attempted {
+                Ok(contribution) => (Some(contribution), None),
+                Err(error) => (None, Some(error.to_string())),
+            };
+            executions.push(ContextHookExecution {
+                extension_id: self.manifest.id.clone(),
+                hook: hook.name.clone(),
+                duration_ms: started.elapsed().as_millis(),
+                contribution,
+                error,
+            });
+        }
+        Ok(executions)
+    }
+
+    pub fn run_tool_suggestion_hooks(
+        &self,
+        trigger: &Event,
+    ) -> Result<Vec<ToolSuggestionHookExecution>> {
+        if !self.is_enabled() {
+            return Ok(Vec::new());
+        }
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("extension '{}' lock poisoned", self.manifest.id))?;
+        let mut executions = Vec::new();
+        for hook in &state.tool_suggestion_hooks {
+            state.instruction_budget.store(100, Ordering::Relaxed);
+            let started = Instant::now();
+            let attempted: Result<Vec<ToolSuggestion>> = (|| {
+                let handler: Function = state.lua.registry_value(&hook.handler)?;
+                let argument = state.lua.to_value(trigger)?;
+                let result: LuaValue = handler.call(argument).with_context(|| {
+                    format!(
+                        "extension '{}' tool suggestion hook '{}' failed",
+                        self.manifest.id, hook.name
+                    )
+                })?;
+                let suggestions: Vec<ToolSuggestion> = state.lua.from_value(result)?;
+                for suggestion in &suggestions {
+                    if !suggestion
+                        .tool
+                        .starts_with(&format!("{}.", self.manifest.id))
+                    {
+                        bail!(
+                            "extension '{}' suggestion hook '{}' suggested tool '{}' outside its namespace",
+                            self.manifest.id,
+                            hook.name,
+                            suggestion.tool
+                        );
+                    }
+                    if !state
+                        .tools
+                        .iter()
+                        .any(|tool| tool.definition.name == suggestion.tool)
+                    {
+                        bail!(
+                            "extension '{}' suggestion hook '{}' suggested unknown tool '{}'",
+                            self.manifest.id,
+                            hook.name,
+                            suggestion.tool
+                        );
+                    }
+                }
+                Ok(suggestions)
+            })();
+            let (suggestions, error) = match attempted {
+                Ok(suggestions) => (suggestions, None),
+                Err(error) => (Vec::new(), Some(error.to_string())),
+            };
+            executions.push(ToolSuggestionHookExecution {
+                extension_id: self.manifest.id.clone(),
+                hook: hook.name.clone(),
+                duration_ms: started.elapsed().as_millis(),
+                suggestions,
+                error,
+            });
+        }
+        Ok(executions)
     }
 
     pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
@@ -392,31 +550,30 @@ impl LoadedExtension {
             .unwrap_or_default()
     }
 
-    pub fn execute_tool(
-        &self,
-        call: &ToolCall,
-        context: &ToolContext,
-    ) -> Result<Option<ToolExecution>> {
+    pub fn execute_tool(&self, call: &ToolCall, context: &ToolContext) -> Result<ToolExecution> {
         if !self.is_enabled() {
-            return Ok(None);
+            bail!("extension '{}' is disabled", self.manifest.id);
         }
         let state = self
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("extension '{}' lock poisoned", self.manifest.id))?;
-        let Some(tool) = state
+        let tool = state
             .tools
             .iter()
             .find(|tool| tool.definition.name == call.name)
-        else {
-            return Ok(None);
-        };
+            .with_context(|| {
+                format!(
+                    "extension '{}' does not own tool '{}'",
+                    self.manifest.id, call.name
+                )
+            })?;
         state.instruction_budget.store(100, Ordering::Relaxed);
         let handler: Function = state.lua.registry_value(&tool.handler)?;
         let arguments = state.lua.to_value(&call.arguments)?;
         let context = state.lua.to_value(context)?;
         let result: LuaValue = handler.call((arguments, context))?;
-        Ok(Some(state.lua.from_value(result)?))
+        Ok(state.lua.from_value(result)?)
     }
 
     pub fn static_file(&self, path: &str) -> Result<Option<(Vec<u8>, String)>> {
@@ -485,6 +642,7 @@ impl ExtensionManager {
         if candidate.manifest.id != id {
             bail!("installed extension manifest id does not match directory '{id}'");
         }
+        self.validate_reload_tool_names(id, &candidate)?;
         self.extensions
             .write()
             .map_err(|_| anyhow::anyhow!("extension registry lock poisoned"))?
@@ -492,27 +650,71 @@ impl ExtensionManager {
         Ok(candidate)
     }
 
-    fn snapshot(&self) -> Vec<Arc<LoadedExtension>> {
-        self.extensions
-            .read()
-            .map(|extensions| extensions.values().cloned().collect())
-            .unwrap_or_default()
-    }
-
-    pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
-        self.snapshot()
+    fn validate_reload_tool_names(
+        &self,
+        replaced_id: &str,
+        candidate: &Arc<LoadedExtension>,
+    ) -> Result<()> {
+        let mut names = HashSet::new();
+        let mut provider_names = HashSet::new();
+        let mut extensions = self.snapshot();
+        extensions.retain(|extension| extension.manifest.id != replaced_id);
+        extensions.push(candidate.clone());
+        for definition in extensions
             .iter()
             .flat_map(|extension| extension.tool_definitions())
-            .collect()
-    }
-
-    pub fn execute_tool(&self, call: &ToolCall, context: &ToolContext) -> Result<ToolExecution> {
-        for extension in self.snapshot() {
-            if let Some(result) = extension.execute_tool(call, context)? {
-                return Ok(result);
+        {
+            if !names.insert(definition.name.clone()) {
+                bail!("duplicate tool name '{}'", definition.name);
+            }
+            let provider_name = provider_tool_name(&definition.name);
+            if !provider_names.insert(provider_name.clone()) {
+                bail!("tool names collide after provider normalization: '{provider_name}'");
             }
         }
-        bail!("unknown extension tool '{}'", call.name)
+        Ok(())
+    }
+
+    fn snapshot(&self) -> Vec<Arc<LoadedExtension>> {
+        let mut snapshot = self
+            .extensions
+            .read()
+            .map(|extensions| extensions.values().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        snapshot.sort_by(|left, right| left.manifest.id.cmp(&right.manifest.id));
+        snapshot
+    }
+
+    pub fn run_context_hooks(&self, trigger: &Event) -> Result<Vec<ContextHookExecution>> {
+        self.snapshot()
+            .iter()
+            .map(|extension| extension.run_context_hooks(trigger))
+            .collect::<Result<Vec<_>>>()
+            .map(|executions| executions.into_iter().flatten().collect())
+    }
+
+    pub fn run_tool_suggestion_hooks(
+        &self,
+        trigger: &Event,
+    ) -> Result<Vec<ToolSuggestionHookExecution>> {
+        self.snapshot()
+            .iter()
+            .map(|extension| extension.run_tool_suggestion_hooks(trigger))
+            .collect::<Result<Vec<_>>>()
+            .map(|executions| executions.into_iter().flatten().collect())
+    }
+
+    pub fn tool_catalog_entries(&self) -> Vec<(ToolDefinition, Arc<LoadedExtension>)> {
+        self.snapshot()
+            .iter()
+            .flat_map(|extension| {
+                extension
+                    .tool_definitions()
+                    .into_iter()
+                    .map(|definition| (definition, extension.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
     }
 
     pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<bool> {
@@ -528,17 +730,19 @@ impl ExtensionManager {
             .snapshot()
             .iter()
             .map(|extension| {
-                let (route_count, tool_count, reactions) = extension
-                    .state
-                    .lock()
-                    .map(|state| {
-                        (
-                            state.routes.len(),
-                            state.tools.len(),
-                            state.context_handler.is_some(),
-                        )
-                    })
-                    .unwrap_or_default();
+                let (route_count, tool_count, context_hook_count, suggestion_hook_count) =
+                    extension
+                        .state
+                        .lock()
+                        .map(|state| {
+                            (
+                                state.routes.len(),
+                                state.tools.len(),
+                                state.context_hooks.len(),
+                                state.tool_suggestion_hooks.len(),
+                            )
+                        })
+                        .unwrap_or_default();
                 let mut provides = Vec::new();
                 if extension
                     .manifest
@@ -561,8 +765,11 @@ impl ExtensionManager {
                 if extension.manifest.capabilities.events {
                     provides.push("Event history access".to_owned());
                 }
-                if reactions {
-                    provides.push("Model reactions".to_owned());
+                if context_hook_count > 0 {
+                    provides.push(format!("{context_hook_count} context hooks"));
+                }
+                if suggestion_hook_count > 0 {
+                    provides.push(format!("{suggestion_hook_count} tool suggestion hooks"));
                 }
                 let installation = ExtensionInstaller::new(self.directory.clone())
                     .metadata(&extension.manifest.id)
@@ -693,6 +900,32 @@ fn create_events_api(lua: &Lua, store: SharedEventStore) -> mlua::Result<mlua::T
     Ok(events)
 }
 
+fn extension_generation(
+    manifest: &str,
+    source: &str,
+    static_files: &HashMap<String, (Vec<u8>, String)>,
+) -> String {
+    let mut hasher = Sha256::new();
+    for bytes in [manifest.as_bytes(), source.as_bytes()] {
+        hasher.update((bytes.len() as u64).to_be_bytes());
+        hasher.update(bytes);
+    }
+    let mut paths = static_files.keys().collect::<Vec<_>>();
+    paths.sort();
+    for path in paths {
+        let (contents, content_type) = &static_files[path];
+        for bytes in [
+            path.as_bytes(),
+            content_type.as_bytes(),
+            contents.as_slice(),
+        ] {
+            hasher.update((bytes.len() as u64).to_be_bytes());
+            hasher.update(bytes);
+        }
+    }
+    format!("{:x}", hasher.finalize())
+}
+
 fn load_static_files(
     directory: &Path,
     manifest: &ExtensionManifest,
@@ -761,8 +994,34 @@ fn collect_static_files(
     Ok(size)
 }
 
+fn validate_hook_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || !name.chars().all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || matches!(character, '-' | '_' | '.')
+        })
+    {
+        bail!("hook name must contain only lowercase letters, digits, '.', '-' and '_'");
+    }
+    Ok(())
+}
+
+fn validate_unique_hooks(extension_id: &str, kind: &str, hooks: &[RegisteredHook]) -> Result<()> {
+    let mut names = HashSet::new();
+    for hook in hooks {
+        if !names.insert(&hook.name) {
+            bail!(
+                "extension '{extension_id}' registers duplicate {kind} hook '{}'",
+                hook.name
+            );
+        }
+    }
+    Ok(())
+}
+
 fn validate_manifest(manifest: &ExtensionManifest) -> Result<()> {
-    if manifest.api_version != 1 {
+    if manifest.api_version != 2 {
         bail!(
             "extension '{}' uses unsupported API version {}",
             manifest.id,
@@ -809,6 +1068,7 @@ fn match_route(pattern: &str, path: &str) -> Option<HashMap<String, String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::EventStore;
 
     #[test]
     fn matches_route_parameters() {
@@ -816,5 +1076,31 @@ mod tests {
             match_route("/api/sessions/:id/messages", "/api/sessions/abc/messages").unwrap();
         assert_eq!(params.get("id").map(String::as_str), Some("abc"));
         assert!(match_route("/one", "/two").is_none());
+    }
+
+    #[test]
+    fn context_hooks_are_ordered_and_fail_independently() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("extension.toml"),
+            "id = \"example\"\nname = \"Example\"\nversion = \"1.0.0\"\napi_version = 2\n[capabilities]\ncontext = true\n",
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("extension.lua"),
+            concat!(
+                "habibi.context.register(\"z-failing\", function() error(\"boom\") end)\n",
+                "habibi.context.register(\"a-good\", function() return { items = habibi.array({}) } end)\n",
+            ),
+        )
+        .unwrap();
+        let store = EventStore::open(":memory:").unwrap().shared();
+        let extension = LoadedExtension::load(directory.path(), store).unwrap();
+        let trigger = Event::new("test.trigger", "test", uuid::Uuid::now_v7(), None, serde_json::json!({}));
+        let executions = extension.run_context_hooks(&trigger).unwrap();
+        assert_eq!(executions[0].hook, "a-good");
+        assert!(executions[0].contribution.is_some());
+        assert_eq!(executions[1].hook, "z-failing");
+        assert!(executions[1].error.as_deref().is_some_and(|error| error.contains("boom")));
     }
 }

@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -60,6 +63,21 @@ pub struct ModelUsageStats {
     pub last_invocation_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ToolUsageStats {
+    pub tool: String,
+    pub advertised_invocations: u64,
+    pub chains_advertised: u64,
+    pub calls: u64,
+    pub chains_used: u64,
+    pub succeeded: u64,
+    pub failed: u64,
+    pub estimated_schema_tokens: u64,
+    pub average_duration_ms: Option<f64>,
+    pub last_advertised_at: Option<String>,
+    pub last_called_at: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct UsageStats {
     pub invocations: u64,
@@ -72,6 +90,7 @@ pub struct UsageStats {
     pub estimated_cost_usd: Option<f64>,
     pub priced_invocations: u64,
     pub models: Vec<ModelUsageStats>,
+    pub tools: Vec<ToolUsageStats>,
 }
 
 pub struct EventStore {
@@ -555,6 +574,7 @@ impl EventStore {
             .iter()
             .filter_map(|model| model.estimated_cost_usd)
             .reduce(|left, right| left + right);
+        let tools = self.tool_usage_stats()?;
         Ok(UsageStats {
             invocations: models.iter().map(|model| model.invocations).sum(),
             failed_invocations,
@@ -566,7 +586,112 @@ impl EventStore {
             estimated_cost_usd,
             priced_invocations: models.iter().map(|model| model.priced_invocations).sum(),
             models,
+            tools,
         })
+    }
+
+    fn tool_usage_stats(&self) -> Result<Vec<ToolUsageStats>> {
+        let mut tools = BTreeMap::<String, ToolUsageStats>::new();
+        let mut advertised = self.connection.prepare(
+            "SELECT json_extract(item.value, '$.tool'), COUNT(*),
+                    COUNT(DISTINCT logs.correlation_id),
+                    COALESCE(SUM(json_extract(item.value, '$.estimated_schema_tokens')), 0),
+                    MAX(logs.occurred_at)
+             FROM logs, json_each(logs.payload, '$.tools') AS item
+             WHERE logs.name = 'tool.surface.prepared'
+               AND json_extract(item.value, '$.decision') = 'advertised'
+             GROUP BY 1",
+        )?;
+        for row in advertised.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)? as u64,
+                row.get::<_, i64>(2)? as u64,
+                row.get::<_, i64>(3)? as u64,
+                row.get::<_, Option<String>>(4)?,
+            ))
+        })? {
+            let (tool, invocations, chains, schema_tokens, last) = row?;
+            tools.insert(
+                tool.clone(),
+                ToolUsageStats {
+                    tool,
+                    advertised_invocations: invocations,
+                    chains_advertised: chains,
+                    estimated_schema_tokens: schema_tokens,
+                    last_advertised_at: last,
+                    ..ToolUsageStats::default()
+                },
+            );
+        }
+
+        let mut calls = self.connection.prepare(
+            "SELECT json_extract(payload, '$.tool'), COUNT(*),
+                    COUNT(DISTINCT correlation_id), MAX(occurred_at)
+             FROM events
+             WHERE event_type = 'action.requested'
+             GROUP BY 1",
+        )?;
+        for row in calls.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)? as u64,
+                row.get::<_, i64>(2)? as u64,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })? {
+            let (tool, count, chains, last) = row?;
+            let stats = tools.entry(tool.clone()).or_insert_with(|| ToolUsageStats {
+                tool,
+                ..ToolUsageStats::default()
+            });
+            stats.calls = count;
+            stats.chains_used = chains;
+            stats.last_called_at = last;
+        }
+
+        let mut outcomes = self.connection.prepare(
+            "SELECT json_extract(payload, '$.tool'),
+                    SUM(CASE WHEN event_type = 'action.result.succeeded' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN event_type = 'action.result.failed' THEN 1 ELSE 0 END)
+             FROM events
+             WHERE event_type IN ('action.result.succeeded', 'action.result.failed')
+             GROUP BY 1",
+        )?;
+        for row in outcomes.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)? as u64,
+                row.get::<_, i64>(2)? as u64,
+            ))
+        })? {
+            let (tool, succeeded, failed) = row?;
+            let stats = tools.entry(tool.clone()).or_insert_with(|| ToolUsageStats {
+                tool,
+                ..ToolUsageStats::default()
+            });
+            stats.succeeded = succeeded;
+            stats.failed = failed;
+        }
+
+        let mut durations = self.connection.prepare(
+            "SELECT json_extract(payload, '$.tool'),
+                    AVG(json_extract(payload, '$.duration_ms'))
+             FROM logs
+             WHERE name = 'action.execution.completed'
+             GROUP BY 1",
+        )?;
+        for row in durations.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<f64>>(1)?))
+        })? {
+            let (tool, average) = row?;
+            let stats = tools.entry(tool.clone()).or_insert_with(|| ToolUsageStats {
+                tool,
+                ..ToolUsageStats::default()
+            });
+            stats.average_duration_ms = average;
+        }
+        Ok(tools.into_values().collect())
     }
 
     fn migrate_operational_events_to_logs(&self) -> Result<()> {
@@ -896,6 +1021,67 @@ mod tests {
         assert_eq!(stats.cache_write_tokens, 5);
         assert_eq!(stats.estimated_cost_usd, Some(0.00125));
         assert_eq!(stats.models[0].model, "gpt-test");
+    }
+
+    #[test]
+    fn aggregates_tool_advertisements_calls_outcomes_and_duration() {
+        let file = NamedTempFile::new().unwrap();
+        let store = EventStore::open(file.path().to_str().unwrap()).unwrap();
+        let correlation_id = Uuid::now_v7();
+        store
+            .append_log(&LogEntry::new(
+                "debug",
+                "tool",
+                "tool.surface.prepared",
+                correlation_id,
+                None,
+                correlation_id,
+                json!({
+                    "tools": [{
+                        "tool": "example.read",
+                        "decision": "advertised",
+                        "estimated_schema_tokens": 42
+                    }]
+                }),
+            ))
+            .unwrap();
+        let requested = Event::new(
+            "action.requested",
+            "habibi",
+            correlation_id,
+            None,
+            json!({ "tool": "example.read" }),
+        );
+        store.append(&requested).unwrap();
+        store
+            .append(&Event::new(
+                "action.result.succeeded",
+                "habibi",
+                correlation_id,
+                Some(requested.id),
+                json!({ "tool": "example.read" }),
+            ))
+            .unwrap();
+        store
+            .append_log(&LogEntry::new(
+                "info",
+                "action",
+                "action.execution.completed",
+                correlation_id,
+                Some(requested.id),
+                correlation_id,
+                json!({ "tool": "example.read", "duration_ms": 12 }),
+            ))
+            .unwrap();
+        let stats = store.usage_stats().unwrap();
+        let tool = &stats.tools[0];
+        assert_eq!(tool.tool, "example.read");
+        assert_eq!(tool.advertised_invocations, 1);
+        assert_eq!(tool.chains_advertised, 1);
+        assert_eq!(tool.calls, 1);
+        assert_eq!(tool.succeeded, 1);
+        assert_eq!(tool.estimated_schema_tokens, 42);
+        assert_eq!(tool.average_duration_ms, Some(12.0));
     }
 
     #[test]

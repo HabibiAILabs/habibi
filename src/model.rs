@@ -7,15 +7,14 @@ use uuid::Uuid;
 use crate::{
     auth::CredentialStore,
     catalog::{CatalogManager, CatalogModel, ModelCatalog, ModelPricing},
-    event::ConversationMessage,
     tool::{ToolCall, ToolDefinition, provider_tool_name},
 };
 
-pub(crate) const SYSTEM_PROMPT: &str = r#"You are Habibi, a local personal AI with one continuous conversation.
-The messages supplied to you are selected from the durable event history and may span long periods of time.
-Use the available tools to inspect durable history and act through extensions.
-For chat events, every user-visible response must be sent with chat.send_message; plain assistant text is not delivered to the user.
-You may call zero or more tools. Calls made in one turn are independent and their results are delivered together."#;
+pub(crate) const SYSTEM_PROMPT: &str = r#"You are Habibi, a local event-driven personal AI.
+Each invocation processes one immutable current event. Extension-provided context may accompany it.
+Act only through tools advertised for this invocation. Use habibi.tools.search when you need a tool that is not advertised.
+Tool calls in one invocation are independent; their durable results are delivered in a subsequent action.batch.completed event.
+Plain assistant text is operational output only; use an advertised extension tool for user-visible or domain effects."#;
 const DEFAULT_CODEX_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 
 #[derive(Debug, Clone)]
@@ -117,14 +116,6 @@ impl ModelClient {
 
     pub fn model_name(&self) -> &str {
         &self.config.model
-    }
-
-    pub fn conversation_input(&self, conversation: &[ConversationMessage]) -> Vec<Value> {
-        conversation
-            .iter()
-            .enumerate()
-            .map(|(index, message)| conversation_input(index, message))
-            .collect()
     }
 
     pub fn request_body(&self, input: &[Value], tools: &[ToolDefinition]) -> Value {
@@ -235,27 +226,6 @@ impl ModelClient {
         }
 
         parse_sse_response(&response_body, &self.config.model)
-    }
-}
-
-fn conversation_input(index: usize, message: &ConversationMessage) -> Value {
-    if message.role == "assistant" {
-        json!({
-            "type": "message",
-            "id": format!("msg_habibi_{index}"),
-            "role": "assistant",
-            "status": "completed",
-            "content": [{
-                "type": "output_text",
-                "text": message.content,
-                "annotations": []
-            }]
-        })
-    } else {
-        json!({
-            "role": "user",
-            "content": [{ "type": "input_text", "text": message.content }]
-        })
     }
 }
 
@@ -390,20 +360,6 @@ fn parse_usage(value: &Value) -> TokenUsage {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn converts_conversation_roles_to_responses_input() {
-        let user = ConversationMessage {
-            role: "user".into(),
-            content: "hello".into(),
-        };
-        let assistant = ConversationMessage {
-            role: "assistant".into(),
-            content: "hi".into(),
-        };
-        assert_eq!(conversation_input(0, &user)["role"], "user");
-        assert_eq!(conversation_input(1, &assistant)["type"], "message");
-    }
 
     #[test]
     fn parses_streamed_function_call_when_completed_output_is_empty() {
