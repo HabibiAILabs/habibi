@@ -145,8 +145,6 @@ impl ExtensionInstaller {
         let available_revision = source_revision(&package.source);
         let newer_version =
             Version::parse(&package.manifest.version)? > Version::parse(&installed.version)?;
-        let changed_revision =
-            available_revision.is_some() && available_revision != installed_revision;
         let changed_content = package.content_hash != installed.content_hash;
         Ok(UpdateStatus {
             id: extension_id.to_owned(),
@@ -156,7 +154,7 @@ impl ExtensionInstaller {
             available_revision,
             installed_content_hash: installed.content_hash,
             available_content_hash: package.content_hash,
-            update_available: newer_version || changed_revision || changed_content,
+            update_available: newer_version || changed_content,
             installed_capabilities: installed.capabilities,
             available_capabilities: package.manifest.capabilities,
         })
