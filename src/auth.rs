@@ -10,6 +10,7 @@ use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::time::{Instant, sleep};
+use uuid::Uuid;
 
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
@@ -58,6 +59,7 @@ struct TokenResponse {
 #[derive(Debug, Clone)]
 pub struct CredentialStore {
     path: PathBuf,
+    refresh_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 impl CredentialStore {
@@ -65,6 +67,7 @@ impl CredentialStore {
         if let Some(path) = nonempty_env("HABIBI_AUTH_FILE") {
             return Ok(Self {
                 path: PathBuf::from(path),
+                refresh_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             });
         }
 
@@ -74,6 +77,7 @@ impl CredentialStore {
             .context("cannot determine config directory; set HABIBI_AUTH_FILE")?;
         Ok(Self {
             path: config_home.join("habibi/auth.json"),
+            refresh_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 
@@ -121,6 +125,14 @@ impl CredentialStore {
             return Ok(credential);
         }
 
+        let _refresh_guard = self.refresh_lock.lock().await;
+        let credential = self
+            .load()?
+            .openai_codex
+            .context("OpenAI credential disappeared during refresh")?;
+        if credential.expires > unix_time() + REFRESH_EARLY {
+            return Ok(credential);
+        }
         let refreshed = refresh_access_token(client, &credential.refresh).await?;
         self.save(&refreshed)?;
         Ok(refreshed)
@@ -147,7 +159,7 @@ impl CredentialStore {
             .parent()
             .context("auth file has no parent directory")?;
         fs::create_dir_all(parent)?;
-        let temporary = self.path.with_extension("json.tmp");
+        let temporary = self.path.with_extension(format!("{}.tmp", Uuid::now_v7()));
         write_private_file(&temporary, &contents)?;
         fs::rename(&temporary, &self.path)?;
         Ok(())

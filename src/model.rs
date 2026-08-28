@@ -4,12 +4,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::{auth::CredentialStore, event::ConversationMessage};
+use crate::{
+    auth::CredentialStore,
+    event::ConversationMessage,
+    tool::{ToolCall, ToolDefinition, provider_tool_name},
+};
 
-const SYSTEM_PROMPT: &str = r#"You are Habibi, a local personal AI with one continuous conversation.
+pub(crate) const SYSTEM_PROMPT: &str = r#"You are Habibi, a local personal AI with one continuous conversation.
 The messages supplied to you are selected from the durable event history and may span long periods of time.
-For now you have no tools or actions. Respond directly and helpfully to the latest user message.
-Do not claim to have capabilities that are not present."#;
+Use the available tools to inspect durable history and act through extensions.
+For chat events, every user-visible response must be sent with chat.send_message; plain assistant text is not delivered to the user.
+You may call zero or more tools. Calls made in one turn are independent and their results are delivered together."#;
 const DEFAULT_CODEX_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 
 #[derive(Debug, Clone)]
@@ -24,7 +29,7 @@ impl ModelConfig {
     pub fn from_env() -> Result<Self> {
         let endpoint =
             nonempty_env("HABIBI_OPENAI_CODEX_URL").unwrap_or_else(|| DEFAULT_CODEX_URL.into());
-        let model = nonempty_env("HABIBI_MODEL").unwrap_or_else(|| "gpt-5.4".into());
+        let model = nonempty_env("HABIBI_MODEL").unwrap_or_else(|| "gpt-5.6-luna".into());
         let model = model
             .strip_prefix("openai-codex/")
             .unwrap_or(&model)
@@ -64,6 +69,8 @@ pub struct ModelClient {
 #[derive(Debug)]
 pub struct ModelResponse {
     pub content: String,
+    pub output_items: Vec<Value>,
+    pub tool_calls: Vec<ToolCall>,
     pub provider: Option<String>,
     pub model: Option<String>,
     pub usage: Option<TokenUsage>,
@@ -90,19 +97,24 @@ impl ModelClient {
         &self.config.model
     }
 
-    pub async fn invoke(&self, conversation: &[ConversationMessage]) -> Result<ModelResponse> {
-        let credential = self
-            .config
-            .credentials
-            .valid_openai_credential(&self.client)
-            .await?;
-        let request_id = Uuid::now_v7().to_string();
-        let input = conversation
+    pub fn conversation_input(&self, conversation: &[ConversationMessage]) -> Vec<Value> {
+        conversation
             .iter()
             .enumerate()
             .map(|(index, message)| conversation_input(index, message))
-            .collect::<Vec<_>>();
+            .collect()
+    }
 
+    pub fn request_body(&self, input: &[Value], tools: &[ToolDefinition]) -> Value {
+        let tools = tools
+            .iter()
+            .map(|tool| {
+                json!({
+                    "type": "function", "name": provider_tool_name(&tool.name), "description": tool.description,
+                    "parameters": tool.input_schema, "strict": false
+                })
+            })
+            .collect::<Vec<_>>();
         let mut body = json!({
             "model": self.config.model,
             "store": false,
@@ -111,6 +123,7 @@ impl ModelClient {
             "input": input,
             "text": { "verbosity": "low" },
             "include": ["reasoning.encrypted_content"],
+            "tools": tools,
             "tool_choice": "auto",
             "parallel_tool_calls": true
         });
@@ -119,6 +132,20 @@ impl ModelClient {
         {
             body["reasoning"] = json!({ "effort": level, "summary": "auto" });
         }
+        body
+    }
+
+    pub fn endpoint(&self) -> &str {
+        &self.config.endpoint
+    }
+
+    pub async fn invoke(&self, body: Value) -> Result<ModelResponse> {
+        let credential = self
+            .config
+            .credentials
+            .valid_openai_credential(&self.client)
+            .await?;
+        let request_id = Uuid::now_v7().to_string();
 
         let response = self
             .client
@@ -175,6 +202,7 @@ fn conversation_input(index: usize, message: &ConversationMessage) -> Value {
 fn parse_sse_response(sse: &str, model: &str) -> Result<ModelResponse> {
     let mut content = String::new();
     let mut completed_response = None;
+    let mut streamed_output_items = Vec::new();
 
     for line in sse.lines() {
         let Some(data) = line.strip_prefix("data:") else {
@@ -191,6 +219,11 @@ fn parse_sse_response(sse: &str, model: &str) -> Result<ModelResponse> {
             Some("response.output_text.delta") => {
                 if let Some(delta) = event.get("delta").and_then(Value::as_str) {
                     content.push_str(delta);
+                }
+            }
+            Some("response.output_item.done") => {
+                if let Some(item) = event.get("item") {
+                    streamed_output_items.push(item.clone());
                 }
             }
             Some("response.completed" | "response.done" | "response.incomplete") => {
@@ -229,9 +262,42 @@ fn parse_sse_response(sse: &str, model: &str) -> Result<ModelResponse> {
             .join("");
     }
 
+    let output_items = response
+        .get("output")
+        .and_then(Value::as_array)
+        .filter(|items| !items.is_empty())
+        .cloned()
+        .unwrap_or(streamed_output_items);
+    let tool_calls = output_items
+        .iter()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("function_call"))
+        .map(|item| -> Result<ToolCall> {
+            let arguments = item
+                .get("arguments")
+                .and_then(Value::as_str)
+                .map(serde_json::from_str)
+                .transpose()?
+                .unwrap_or_else(|| json!({}));
+            Ok(ToolCall {
+                call_id: item
+                    .get("call_id")
+                    .and_then(Value::as_str)
+                    .context("function call missing call_id")?
+                    .to_owned(),
+                name: item
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .context("function call missing name")?
+                    .to_owned(),
+                arguments,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
     let usage = response.get("usage").map(parse_usage);
     Ok(ModelResponse {
         content,
+        output_items,
+        tool_calls,
         provider: Some("openai-codex".into()),
         model: Some(model.into()),
         usage,
@@ -268,6 +334,18 @@ mod tests {
         };
         assert_eq!(conversation_input(0, &user)["role"], "user");
         assert_eq!(conversation_input(1, &assistant)["type"], "message");
+    }
+
+    #[test]
+    fn parses_streamed_function_call_when_completed_output_is_empty() {
+        let sse = concat!(
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"chat__send_message\",\"arguments\":\"{\\\"content\\\":\\\"hi\\\"}\"}}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"output\":[],\"usage\":{}}}\n\n"
+        );
+        let response = parse_sse_response(sse, "gpt-test").unwrap();
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].name, "chat__send_message");
+        assert_eq!(response.tool_calls[0].arguments["content"], "hi");
     }
 
     #[test]

@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 320" role="img" aria-labelledby="title desc">
+  <title id="title">Habibi</title>
+  <desc id="desc">A continuous event path forming the letter H</desc>
+  <defs>
+    <linearGradient id="glow" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#c7ffd1"/>
+      <stop offset="1" stop-color="#67d982"/>
+    </linearGradient>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="320" height="320" rx="82" fill="#101411"/>
+  <path d="M92 70v180M228 70v180M92 160h136" fill="none" stroke="#263229" stroke-width="30" stroke-linecap="round"/>
+  <path d="M92 70v180M228 70v180M92 160h136" fill="none" stroke="url(#glow)" stroke-width="10" stroke-linecap="round" filter="url(#soft)"/>
+  <g fill="#101411" stroke="#b9ffc7" stroke-width="7">
+    <circle cx="92" cy="70" r="15"/><circle cx="92" cy="160" r="15"/><circle cx="92" cy="250" r="15"/>
+    <circle cx="228" cy="70" r="15"/><circle cx="228" cy="160" r="15"/><circle cx="228" cy="250" r="15"/>
+  </g>
+  <circle cx="160" cy="160" r="13" fill="#b9ffc7"/>
+</svg>

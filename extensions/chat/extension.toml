@@ -1,0 +1,14 @@
+id = "chat"
+name = "Chat"
+version = "0.1.0"
+description = "A multi-session web chat over Habibi's continuous event history."
+api_version = 1
+
+[capabilities]
+web = true
+kv = true
+events = true
+tools = true
+
+[web]
+static_dir = "web"

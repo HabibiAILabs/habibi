@@ -34,7 +34,14 @@ impl Event {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredEvent {
+    pub sequence: i64,
+    #[serde(flatten)]
+    pub event: Event,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConversationMessage {
     pub role: String,
     pub content: String,

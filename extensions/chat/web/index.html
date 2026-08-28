@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Habibi</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div>
+          <span class="eyebrow">HABIBI</span>
+          <h1>Conversations</h1>
+        </div>
+        <button id="new-session" class="icon-button" title="New chat">＋</button>
+      </div>
+      <nav id="sessions" aria-label="Chat sessions"></nav>
+    </aside>
+
+    <section class="conversation">
+      <header class="conversation-header">
+        <div>
+          <span class="eyebrow">ONE CONTINUOUS MEMORY</span>
+          <h2 id="session-title">New chat</h2>
+        </div>
+        <span id="status" class="status">ready</span>
+      </header>
+
+      <div id="messages" class="messages" aria-live="polite"></div>
+
+      <form id="composer" class="composer">
+        <textarea id="message-input" rows="1" placeholder="Message Habibi…" required></textarea>
+        <button type="submit">Send</button>
+      </form>
+    </section>
+  </main>
+  <script src="./app.js" type="module"></script>
+</body>
+</html>
