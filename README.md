@@ -118,7 +118,10 @@ to 100 events and supports `limit` (up to 1,000), `type`, `prefix`, `source`, `c
 `24h`, `7d`, `30d`, or `all`). Sequence cursors allow the UI to traverse all history.
 
 Action requests, structured results, batch barriers, tool effects, and semantic links are events.
-Model requests/responses and execution diagnostics are logs rather than reactor inputs.
+Route-emitted domain events trigger model processing; internal action/effect/result facts are
+represented to the model through the ordered `action.batch.completed` event rather than invoking
+the model once for every bookkeeping event. Model requests/responses and execution diagnostics are
+logs rather than reactor inputs.
 
 `GET /api/logs` and `/logs` provide searchable operational history by level, category, name,
 reaction, trigger, correlation, batch, action, tool call, time, payload text, and sequence. Model

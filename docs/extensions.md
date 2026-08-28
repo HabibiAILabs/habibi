@@ -145,7 +145,9 @@ return {
 }
 ```
 
-Every emitted event enters the reactor after it is appended. Core supplies a stable system prompt
+Every event emitted by an extension route enters the reactor after it is appended. Internal action
+request, effect, and result events remain durable facts, but they are not each sent separately to
+the model; their ordered `action.batch.completed` aggregate is the next model input. Core supplies a stable system prompt
 and the current event. An extension with the `context` capability may contribute its own event
 references or message projections. Hooks run deterministically by extension ID and hook name;
 failed hooks are logged and skipped without stopping other extensions.

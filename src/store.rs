@@ -63,6 +63,17 @@ pub struct ModelUsageStats {
     pub last_invocation_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct EventTypeUsageStats {
+    pub event_type: String,
+    pub invocations: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub average_duration_ms: Option<f64>,
+    pub last_invocation_at: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ToolUsageStats {
     pub tool: String,
@@ -90,6 +101,7 @@ pub struct UsageStats {
     pub estimated_cost_usd: Option<f64>,
     pub priced_invocations: u64,
     pub models: Vec<ModelUsageStats>,
+    pub event_types: Vec<EventTypeUsageStats>,
     pub tools: Vec<ToolUsageStats>,
 }
 
@@ -574,6 +586,7 @@ impl EventStore {
             .iter()
             .filter_map(|model| model.estimated_cost_usd)
             .reduce(|left, right| left + right);
+        let event_types = self.event_type_usage_stats()?;
         let tools = self.tool_usage_stats()?;
         Ok(UsageStats {
             invocations: models.iter().map(|model| model.invocations).sum(),
@@ -586,8 +599,39 @@ impl EventStore {
             estimated_cost_usd,
             priced_invocations: models.iter().map(|model| model.priced_invocations).sum(),
             models,
+            event_types,
             tools,
         })
+    }
+
+    fn event_type_usage_stats(&self) -> Result<Vec<EventTypeUsageStats>> {
+        let mut statement = self.connection.prepare(
+            "SELECT COALESCE(events.event_type, 'unknown'), COUNT(*),
+                    COALESCE(SUM(json_extract(logs.payload, '$.usage.input')), 0),
+                    COALESCE(SUM(json_extract(logs.payload, '$.usage.output')), 0),
+                    COALESCE(SUM(json_extract(logs.payload, '$.usage.total_tokens')), 0),
+                    AVG(json_extract(logs.payload, '$.duration_ms')),
+                    MAX(logs.occurred_at)
+             FROM logs
+             LEFT JOIN events ON events.id = logs.trigger_event_id
+             WHERE logs.name = 'model.invocation.completed'
+             GROUP BY 1
+             ORDER BY COUNT(*) DESC, 1 ASC",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok(EventTypeUsageStats {
+                    event_type: row.get(0)?,
+                    invocations: row.get::<_, i64>(1)? as u64,
+                    input_tokens: row.get::<_, i64>(2)? as u64,
+                    output_tokens: row.get::<_, i64>(3)? as u64,
+                    total_tokens: row.get::<_, i64>(4)? as u64,
+                    average_duration_ms: row.get(5)?,
+                    last_invocation_at: row.get(6)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
 
     fn tool_usage_stats(&self) -> Result<Vec<ToolUsageStats>> {
@@ -600,6 +644,7 @@ impl EventStore {
              FROM logs, json_each(logs.payload, '$.tools') AS item
              WHERE logs.name = 'tool.surface.prepared'
                AND json_extract(item.value, '$.decision') = 'advertised'
+               AND json_extract(item.value, '$.tool') IS NOT NULL
              GROUP BY 1",
         )?;
         for row in advertised.query_map([], |row| {
@@ -630,6 +675,7 @@ impl EventStore {
                     COUNT(DISTINCT correlation_id), MAX(occurred_at)
              FROM events
              WHERE event_type = 'action.requested'
+               AND json_extract(payload, '$.tool') IS NOT NULL
              GROUP BY 1",
         )?;
         for row in calls.query_map([], |row| {
@@ -656,6 +702,7 @@ impl EventStore {
                     SUM(CASE WHEN event_type = 'action.result.failed' THEN 1 ELSE 0 END)
              FROM events
              WHERE event_type IN ('action.result.succeeded', 'action.result.failed')
+               AND json_extract(payload, '$.tool') IS NOT NULL
              GROUP BY 1",
         )?;
         for row in outcomes.query_map([], |row| {
@@ -679,6 +726,7 @@ impl EventStore {
                     AVG(json_extract(payload, '$.duration_ms'))
              FROM logs
              WHERE name = 'action.execution.completed'
+               AND json_extract(payload, '$.tool') IS NOT NULL
              GROUP BY 1",
         )?;
         for row in durations.query_map([], |row| {
@@ -1071,6 +1119,26 @@ mod tests {
                 Some(requested.id),
                 correlation_id,
                 json!({ "tool": "example.read", "duration_ms": 12 }),
+            ))
+            .unwrap();
+        store
+            .append(&Event::new(
+                "action.requested",
+                "legacy",
+                correlation_id,
+                None,
+                json!({ "legacy_shape": true }),
+            ))
+            .unwrap();
+        store
+            .append_log(&LogEntry::new(
+                "info",
+                "action",
+                "action.execution.completed",
+                correlation_id,
+                None,
+                correlation_id,
+                json!({ "details": { "legacy_shape": true } }),
             ))
             .unwrap();
         let stats = store.usage_stats().unwrap();
