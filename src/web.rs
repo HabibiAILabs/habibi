@@ -6,7 +6,7 @@ use axum::{
     body::{Body, Bytes},
     extract::{Path, Query, State},
     http::{HeaderMap, Method, StatusCode, Uri, header},
-    response::{IntoResponse, Redirect, Response},
+    response::{IntoResponse, Response},
     routing::{any, get, post, put},
 };
 use chrono::{DateTime, Duration, Utc};
@@ -28,8 +28,6 @@ pub struct WebState {
     pub reactor: Arc<Reactor>,
     pub store: SharedEventStore,
     pub extensions_dir: PathBuf,
-    pub core_origin: String,
-    pub extension_origin: String,
     pub reaction_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -65,28 +63,10 @@ pub fn router(state: WebState) -> Router {
             "/api/extensions/{extension_id}/reload",
             post(reload_extension),
         )
-        .with_state(state)
-}
-
-pub fn extension_router(state: WebState) -> Router {
-    Router::new()
-        .route("/", get(extension_home_redirect))
-        .route("/events", get(extension_core_redirect))
-        .route("/logs", get(extension_core_redirect))
-        .route("/stats", get(extension_core_redirect))
-        .route("/assets/habibi-logo.svg", get(logo_asset))
         .route("/extensions/{extension_id}", any(extension_root))
         .route("/extensions/{extension_id}/", any(extension_root))
         .route("/extensions/{extension_id}/{*path}", any(extension_path))
         .with_state(state)
-}
-
-async fn extension_home_redirect(State(state): State<WebState>) -> Redirect {
-    Redirect::temporary(&state.core_origin)
-}
-
-async fn extension_core_redirect(State(state): State<WebState>, uri: Uri) -> Redirect {
-    Redirect::temporary(&format!("{}{}", state.core_origin, uri.path()))
 }
 
 async fn home_page() -> Response {
@@ -351,7 +331,7 @@ fn window_start(window: &str) -> anyhow::Result<Option<DateTime<Utc>>> {
 }
 
 async fn list_extensions(State(state): State<WebState>) -> impl IntoResponse {
-    axum::Json(state.extensions.summaries(&state.extension_origin))
+    axum::Json(state.extensions.summaries())
 }
 
 #[derive(Deserialize)]
@@ -383,14 +363,7 @@ async fn toggle_extension(
 async fn check_extension_update(
     State(state): State<WebState>,
     Path(extension_id): Path<String>,
-    headers: HeaderMap,
 ) -> Response {
-    if !is_core_admin_request(&headers) {
-        return json_response(
-            StatusCode::FORBIDDEN,
-            json!({ "error": "core UI request required" }),
-        );
-    }
     let extensions_dir = state.extensions_dir.clone();
     match tokio::task::spawn_blocking(move || {
         ExtensionInstaller::new(extensions_dir).check_update(&extension_id)
@@ -412,14 +385,7 @@ async fn check_extension_update(
 async fn update_extension(
     State(state): State<WebState>,
     Path(extension_id): Path<String>,
-    headers: HeaderMap,
 ) -> Response {
-    if !is_core_admin_request(&headers) {
-        return json_response(
-            StatusCode::FORBIDDEN,
-            json!({ "error": "core UI request required" }),
-        );
-    }
     let _reaction_guard = state.reaction_lock.lock().await;
     let extensions_dir = state.extensions_dir.clone();
     let rollback_dir = extensions_dir.clone();
@@ -467,14 +433,7 @@ async fn update_extension(
 async fn reload_extension(
     State(state): State<WebState>,
     Path(extension_id): Path<String>,
-    headers: HeaderMap,
 ) -> Response {
-    if !is_core_admin_request(&headers) {
-        return json_response(
-            StatusCode::FORBIDDEN,
-            json!({ "error": "core UI request required" }),
-        );
-    }
     let _reaction_guard = state.reaction_lock.lock().await;
     match state.extensions.reload(&extension_id) {
         Ok(extension) => json_response(
@@ -496,13 +455,6 @@ async fn reload_extension(
             )
         }
     }
-}
-
-fn is_core_admin_request(headers: &HeaderMap) -> bool {
-    headers
-        .get("x-habibi-admin-request")
-        .and_then(|value| value.to_str().ok())
-        == Some("core-ui")
 }
 
 async fn extension_root(

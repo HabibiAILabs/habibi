@@ -1,5 +1,4 @@
 const list = document.querySelector("#extension-list");
-const adminHeaders = { "x-habibi-admin-request": "core-ui" };
 
 async function loadExtensions() {
   const response = await fetch("/api/extensions");
@@ -41,6 +40,16 @@ function extensionCard(extension) {
       ? `Installed from ${installation.source.url} @ ${installation.source.revision.slice(0, 8)}`
       : `Installed from ${installation.source.path}`;
     details.append(source);
+    const scan = installation.security_scan;
+    if (scan) {
+      const security = document.createElement("p");
+      security.className = `scan-status${scan.passed ? " passed" : " failed"}`;
+      security.textContent = scan.passed
+        ? `Security/privacy scan passed · ${scan.warning_count} warning${scan.warning_count === 1 ? "" : "s"}`
+        : `Security/privacy scan blocked · ${scan.blocker_count} issue${scan.blocker_count === 1 ? "" : "s"}`;
+      if (scan.findings.length) security.title = scan.findings.map((finding) => `${finding.file}: ${finding.message}`).join("\n");
+      details.append(security);
+    }
   }
 
   const actions = document.createElement("div");
@@ -60,7 +69,7 @@ function extensionCard(extension) {
     update.onclick = async () => {
       update.disabled = true;
       try {
-        const response = await fetch(`/api/extensions/${encodeURIComponent(extension.id)}/check-update`, { method: "POST", headers: adminHeaders });
+        const response = await fetch(`/api/extensions/${encodeURIComponent(extension.id)}/check-update`, { method: "POST" });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || `Update check failed (${response.status})`);
         if (!result.update_available) {
@@ -77,7 +86,7 @@ function extensionCard(extension) {
           if (!window.confirm(`Update ${extension.name} from ${result.installed_version} to ${result.available_version}?\n\nCapabilities: ${enabledCapabilities}\nRevision: ${(result.available_revision || "local source").slice(0, 12)}`)) return;
           update.disabled = true;
           update.textContent = "Updating…";
-          const apply = await fetch(`/api/extensions/${encodeURIComponent(extension.id)}/update`, { method: "POST", headers: adminHeaders });
+          const apply = await fetch(`/api/extensions/${encodeURIComponent(extension.id)}/update`, { method: "POST" });
           const body = await apply.json();
           if (!apply.ok) throw new Error(body.error || `Update failed (${apply.status})`);
           await loadExtensions();

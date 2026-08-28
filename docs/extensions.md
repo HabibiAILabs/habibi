@@ -14,8 +14,10 @@ habibi update chat
 ```
 
 Habibi copies packages rather than executing them in place, rejects symbolic links and unsafe
-subdirectories, validates them in an isolated Lua runtime, and records source/revision/version and
-a content hash in `.habibi-install.json`. Content changes require a semantic version increase.
+subdirectories, runs an automatic security/privacy scan, validates them in an isolated Lua runtime,
+and records source/revision/version, content hash, capabilities, and the scan report in
+`.habibi-install.json`. Blocking scan findings abort the operation before the package can be enabled;
+warnings are displayed for review. Content changes require a semantic version increase.
 
 ## Layout
 
@@ -51,9 +53,9 @@ host APIs. Lua runs without the `io`, `os`, `package`, or `debug` standard libra
 
 Habibi also infers provided features from registered routes, static web content, and reaction
 handlers. These details appear at `/extensions`, where extensions can be enabled or disabled.
-An extension with static web content receives an **Open** link to its `/extensions/{id}/` page on
-the isolated extension-web origin (`HABIBI_EXTENSION_BIND`, port 8788 by default). Core management
-remains on port 8787 so extension JavaScript cannot directly invoke privileged update endpoints.
+An extension with static web content receives an **Open** link to `/extensions/{id}/`. Installed
+extensions are fully trusted local code; capabilities make behavior visible during review and
+control which Lua host APIs are exposed, but they are not a hostile-code security boundary.
 
 ## Web routes
 

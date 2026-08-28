@@ -523,7 +523,7 @@ impl ExtensionManager {
         Ok(true)
     }
 
-    pub fn summaries(&self, extension_origin: &str) -> Vec<ExtensionSummary> {
+    pub fn summaries(&self) -> Vec<ExtensionSummary> {
         let mut summaries = self
             .snapshot()
             .iter()
@@ -581,13 +581,7 @@ impl ExtensionManager {
                         .web
                         .as_ref()
                         .and_then(|web| web.static_dir.as_ref())
-                        .map(|_| {
-                            format!(
-                                "{}/extensions/{}/",
-                                extension_origin.trim_end_matches('/'),
-                                extension.manifest.id
-                            )
-                        }),
+                        .map(|_| format!("/extensions/{}/", extension.manifest.id)),
                 }
             })
             .collect::<Vec<_>>();

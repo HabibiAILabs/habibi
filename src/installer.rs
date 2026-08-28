@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 use crate::{
     extension::{ExtensionCapabilities, ExtensionManifest, LoadedExtension},
+    scanner::{ScanReport, ensure_scan_passed, scan_extension},
     store::EventStore,
 };
 
@@ -44,6 +45,8 @@ pub struct InstallMetadata {
     pub content_hash: String,
     pub installed_at: String,
     pub capabilities: ExtensionCapabilities,
+    #[serde(default)]
+    pub security_scan: Option<ScanReport>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -76,6 +79,7 @@ struct PreparedPackage {
     source: ExtensionSource,
     manifest: ExtensionManifest,
     content_hash: String,
+    security_scan: ScanReport,
 }
 
 impl ExtensionInstaller {
@@ -128,6 +132,7 @@ impl ExtensionInstaller {
         }
         if package.content_hash == installed.content_hash
             && source_revision(&package.source) == source_revision(&installed.source)
+            && installed.security_scan.is_some()
         {
             return Ok(installed);
         }
@@ -245,6 +250,11 @@ impl ExtensionInstaller {
             .join(format!(".habibi-stage-{}", Uuid::now_v7()));
         copy_package(&source_root, &staging)?;
         let content_hash = hash_package(&staging)?;
+        let security_scan = scan_extension(&staging, &manifest)?;
+        if let Err(error) = ensure_scan_passed(&security_scan) {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error);
+        }
         let validation_store = EventStore::open(":memory:")?.shared();
         if let Err(error) = LoadedExtension::load(&staging, validation_store) {
             let _ = fs::remove_dir_all(&staging);
@@ -256,6 +266,7 @@ impl ExtensionInstaller {
             source: resolved_source,
             manifest,
             content_hash,
+            security_scan,
         })
     }
 
@@ -268,6 +279,7 @@ impl ExtensionInstaller {
             content_hash: package.content_hash,
             installed_at: Utc::now().to_rfc3339(),
             capabilities: package.manifest.capabilities.clone(),
+            security_scan: Some(package.security_scan),
         };
         fs::write(
             package.package_root.join(INSTALL_METADATA_FILE),
@@ -562,6 +574,24 @@ mod tests {
         assert_eq!(updated.version, "1.1.0");
         let rolled_back = installer.rollback("example").unwrap();
         assert_eq!(rolled_back.version, "1.0.0");
+    }
+
+    #[test]
+    fn blocks_failed_security_scan_before_install() {
+        let source = tempfile::tempdir().unwrap();
+        package(source.path(), "1.0.0");
+        fs::write(
+            source.path().join("extension.lua"),
+            "local secret = '-----BEGIN PRIVATE KEY-----'\n",
+        )
+        .unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let extensions = destination.path().join("extensions");
+        let error = ExtensionInstaller::new(extensions.clone())
+            .install(source.path().to_str().unwrap(), SourceOptions::default())
+            .unwrap_err();
+        assert!(error.to_string().contains("blocking issue"));
+        assert!(!extensions.join("example").exists());
     }
 
     #[cfg(unix)]

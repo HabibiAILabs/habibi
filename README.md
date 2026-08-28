@@ -13,6 +13,10 @@
   ·
   <a href="docs/extensions.md">Extension authoring</a>
   ·
+  <a href="ROADMAP.md">Roadmap</a>
+  ·
+  <a href="SECURITY.md">Security</a>
+  ·
   <a href="LICENSE">MIT license</a>
 </p>
 
@@ -65,9 +69,6 @@ cp .env.example .env
 | `HABIBI_OPENAI_CODEX_URL` | no | ChatGPT Codex Responses endpoint |
 | `HABIBI_DB` | no | `habibi.db` |
 | `HABIBI_BIND` | no | `127.0.0.1:8787` |
-| `HABIBI_EXTENSION_BIND` | no | `127.0.0.1:8788` |
-| `HABIBI_CORE_ORIGIN` | no | derived from `HABIBI_BIND` |
-| `HABIBI_EXTENSION_ORIGIN` | no | derived from `HABIBI_EXTENSION_BIND` |
 | `HABIBI_EXTENSIONS_DIR` | no | `extensions` |
 | `HABIBI_CONTEXT_MESSAGES` | no | `40` |
 
@@ -100,10 +101,13 @@ installation time. Use `habibi update <id>` or the Extensions UI to check and ap
 `habibi rollback <id>` to restore the previous installed generation. An extension must increase
 its manifest version when its content changes.
 
-Extension web applications are served from `http://127.0.0.1:8788`, separately from the core
-management UI. This prevents extension JavaScript from directly invoking privileged management
-endpoints. Chat stores sessions and messages as `chat.*` events and keeps UI preferences in its
-private KV namespace.
+Installed extensions are fully trusted local code. Their web applications and APIs share Habibi's
+origin, and declared capabilities describe behavior for review rather than forming a hostile-code
+security boundary. Every install and update is staged, automatically security/privacy scanned, and
+Lua-validated before it can enter the active runtime; blocking findings abort the operation and
+warnings remain visible in installation metadata and the Extensions UI. See [`SECURITY.md`](SECURITY.md)
+for the scanner's coverage and limitations. Chat stores sessions and messages as `chat.*` events
+and keeps UI preferences in its private KV namespace.
 
 ## Events API
 
@@ -135,7 +139,7 @@ message delivery tools.
 
 The official chat extension is maintained at
 [`HabibiAssistant/extensions`](https://github.com/HabibiAssistant/extensions/tree/main/chat).
-Its default web/API origin is `http://127.0.0.1:8788`.
+Its web UI and API are mounted beneath `/extensions/chat/`.
 
 ```text
 GET    /extensions/chat/api/sessions

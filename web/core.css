@@ -46,6 +46,9 @@ button { font: inherit; }
 .extension-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; }
 .installation-source { margin: 14px 0 0; color: var(--muted); font: 11px ui-monospace, monospace; overflow-wrap: anywhere; }
 .update-button { cursor: pointer; color: var(--text); }
+.scan-status { margin: 8px 0 0; color: var(--muted); font-size: 11px; }
+.scan-status.passed { color: var(--green); }
+.scan-status.failed { color: #ff9b9b; }
 .open-link { border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; background: var(--raised); }
 .toggle { position: relative; width: 46px; height: 26px; border: 0; border-radius: 999px; background: #39423b; }
 .toggle::after { position: absolute; top: 4px; left: 4px; width: 18px; height: 18px; border-radius: 50%; background: white; content: ""; transition: transform .16s; }

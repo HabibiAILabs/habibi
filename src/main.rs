@@ -5,6 +5,7 @@ mod extension;
 mod installer;
 mod model;
 mod reactor;
+mod scanner;
 mod store;
 mod tool;
 mod web;
@@ -49,6 +50,7 @@ async fn main() -> Result<()> {
         let installed = ExtensionInstaller::new(extensions_path).install(&source, options)?;
         println!("Installed {} {}", installed.name, installed.version);
         println!("Extension ID: {}", installed.id);
+        print_scan_summary(&installed);
         notify_extension_reload(&installed.id).await;
         return Ok(());
     }
@@ -58,6 +60,7 @@ async fn main() -> Result<()> {
         }
         let installed = ExtensionInstaller::new(extensions_path).update(&arguments[1])?;
         println!("Updated {} to {}", installed.name, installed.version);
+        print_scan_summary(&installed);
         notify_extension_reload(&installed.id).await;
         return Ok(());
     }
@@ -79,12 +82,6 @@ async fn main() -> Result<()> {
 
     let database_path = std::env::var("HABIBI_DB").unwrap_or_else(|_| "habibi.db".to_owned());
     let bind_address = std::env::var("HABIBI_BIND").unwrap_or_else(|_| "127.0.0.1:8787".to_owned());
-    let extension_bind_address =
-        std::env::var("HABIBI_EXTENSION_BIND").unwrap_or_else(|_| "127.0.0.1:8788".to_owned());
-    let core_origin =
-        std::env::var("HABIBI_CORE_ORIGIN").unwrap_or_else(|_| format!("http://{bind_address}"));
-    let extension_origin = std::env::var("HABIBI_EXTENSION_ORIGIN")
-        .unwrap_or_else(|_| format!("http://{extension_bind_address}"));
     let context_message_limit = std::env::var("HABIBI_CONTEXT_MESSAGES")
         .unwrap_or_else(|_| "40".to_owned())
         .parse::<usize>()
@@ -110,41 +107,42 @@ async fn main() -> Result<()> {
         reactor,
         store,
         extensions_dir: extensions_path.clone(),
-        core_origin,
-        extension_origin,
         reaction_lock: Arc::new(tokio::sync::Mutex::new(())),
     };
-    let app = web::router(state.clone());
-    let extension_app = web::extension_router(state);
+    let app = web::router(state);
 
     let listener = tokio::net::TcpListener::bind(&bind_address)
         .await
         .with_context(|| format!("failed to bind Habibi web server to {bind_address}"))?;
-    let extension_listener = tokio::net::TcpListener::bind(&extension_bind_address)
-        .await
-        .with_context(|| {
-            format!("failed to bind Habibi extension web server to {extension_bind_address}")
-        })?;
     println!("Habibi — one continuous event stream");
     println!("Event store: {database_path}");
     println!("Extensions: {}", extensions_path.display());
     println!("Web: http://{bind_address}");
-    println!("Extension web: http://{extension_bind_address}");
 
-    tokio::select! {
-        result = axum::serve(listener, app) => result?,
-        result = axum::serve(extension_listener, extension_app) => result?,
-        _ = shutdown_signal() => {}
-    }
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
     Ok(())
 }
 
+fn print_scan_summary(installed: &installer::InstallMetadata) {
+    if let Some(scan) = &installed.security_scan {
+        println!(
+            "Security/privacy scan: passed ({} files, {} warnings)",
+            scan.files_scanned, scan.warning_count
+        );
+        for finding in &scan.findings {
+            println!(
+                "  {:?}: {} — {}",
+                finding.severity, finding.file, finding.message
+            );
+        }
+    }
+}
+
 async fn notify_extension_reload(extension_id: &str) {
-    let core_origin = std::env::var("HABIBI_CORE_ORIGIN").unwrap_or_else(|_| {
-        let bind_address =
-            std::env::var("HABIBI_BIND").unwrap_or_else(|_| "127.0.0.1:8787".to_owned());
-        format!("http://{bind_address}")
-    });
+    let bind_address = std::env::var("HABIBI_BIND").unwrap_or_else(|_| "127.0.0.1:8787".to_owned());
+    let core_origin = format!("http://{bind_address}");
     let url = format!(
         "{}/api/extensions/{}/reload",
         core_origin.trim_end_matches('/'),
