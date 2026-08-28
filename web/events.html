@@ -26,7 +26,8 @@
           <option value="custom">Custom</option>
         </select>
       </label>
-      <label>Event type<input name="type" list="event-types" placeholder="e.g. model.invocation.completed"></label>
+      <label>Event ID<input name="event_id" placeholder="UUID"></label>
+      <label>Event type<input name="type" list="event-types" placeholder="e.g. chat.message.created"></label>
       <datalist id="event-types">
         <option value="action.requested"><option value="action.result.succeeded">
         <option value="action.result.failed"><option value="chat.message.created">

@@ -264,7 +264,9 @@ impl Reactor {
                 json!({
                     "provider": "openai-codex", "model": self.model.model_name(),
                     "endpoint": self.model.endpoint(), "root_trigger_event_id": trigger.id,
-                    "current_event_id": current_event.id, "context_log_id": context_log_id,
+                    "current_event_id": current_event.id,
+                    "current_event_type": current_event.event_type,
+                    "context_log_id": context_log_id,
                     "tool_surface_log_id": surface_log_id,
                     "tool_catalog_generation": catalog.generation, "request": request
                 }),
@@ -286,6 +288,7 @@ impl Reactor {
                         trigger.correlation_id,
                         json!({
                             "error": error.to_string(), "started_log_id": started_log_id,
+                            "current_event_type": current_event.event_type,
                             "context_log_id": context_log_id, "tool_surface_log_id": surface_log_id,
                             "duration_ms": invocation_started_at.elapsed().as_millis()
                         }),
@@ -317,7 +320,8 @@ impl Reactor {
                 trigger.correlation_id,
                 json!({
                     "started_log_id": started_log_id, "provider": response.provider,
-                    "model": response.model, "content": &response.content,
+                    "model": response.model, "current_event_type": current_event.event_type,
+                    "content": &response.content,
                     "tool_calls": &response.tool_calls, "output_items": &response.output_items,
                     "provider_response": &response.provider_response,
                     "usage": &response.usage, "context_log_id": context_log_id,

@@ -32,15 +32,16 @@ async function loadStats() {
   ])));
   if (!usage.models.length) emptyRow("#model-usage", 8, "No completed model invocations yet.");
   $("#event-type-usage").replaceChildren(...usage.event_types.map((eventType) => row([
-    eventType.event_type,
+    link(eventType.event_type, `/events?type=${encodeURIComponent(eventType.event_type)}`),
     number.format(eventType.invocations),
     number.format(eventType.input_tokens),
     number.format(eventType.output_tokens),
     number.format(eventType.total_tokens),
     eventType.average_duration_ms == null ? "—" : `${eventType.average_duration_ms.toFixed(1)} ms`,
     eventType.last_invocation_at ? new Date(eventType.last_invocation_at).toLocaleString() : "—",
+    link("Logs", `/logs?name=model.invocation.started&payload_contains=${encodeURIComponent(eventType.event_type)}`),
   ])));
-  if (!usage.event_types.length) emptyRow("#event-type-usage", 7, "No event-triggered model invocations yet.");
+  if (!usage.event_types.length) emptyRow("#event-type-usage", 8, "No event-triggered model invocations yet.");
   $("#tool-usage").replaceChildren(...usage.tools.map((tool) => row([
     tool.tool,
     number.format(tool.advertised_invocations),
@@ -72,8 +73,18 @@ async function loadCatalog() {
 
 function row(values) {
   const row = document.createElement("tr");
-  for (const value of values) { const cell = document.createElement("td"); cell.textContent = value; row.append(cell); }
+  for (const value of values) {
+    const cell = document.createElement("td");
+    if (value instanceof Node) cell.append(value); else cell.textContent = value;
+    row.append(cell);
+  }
   return row;
+}
+function link(label, href) {
+  const anchor = document.createElement("a");
+  anchor.href = href;
+  anchor.textContent = label;
+  return anchor;
 }
 function emptyRow(selector, span, message) {
   const tableRow = document.createElement("tr"), cell = document.createElement("td");

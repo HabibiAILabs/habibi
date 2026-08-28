@@ -43,6 +43,7 @@ pub fn router(state: WebState) -> Router {
         .route("/assets/extensions.js", get(extensions_js_asset))
         .route("/assets/events.js", get(events_js_asset))
         .route("/assets/logs.js", get(logs_js_asset))
+        .route("/assets/markdown.js", get(markdown_js_asset))
         .route("/assets/stats.js", get(stats_js_asset))
         .route("/api/events", get(list_events))
         .route("/api/logs", get(list_logs))
@@ -115,6 +116,13 @@ async fn logs_js_asset() -> Response {
     asset_response(
         "text/javascript; charset=utf-8",
         include_bytes!("../web/logs.js"),
+    )
+}
+
+async fn markdown_js_asset() -> Response {
+    asset_response(
+        "text/javascript; charset=utf-8",
+        include_bytes!("../web/markdown.js"),
     )
 }
 

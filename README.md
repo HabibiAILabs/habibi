@@ -127,6 +127,8 @@ logs rather than reactor inputs.
 reaction, trigger, correlation, batch, action, tool call, time, payload text, and sequence. Model
 logs include exact requests, native output items, parsed tool calls, token usage, cache reads and
 writes when reported by the provider, and per-invocation cost estimates when pricing is configured.
+The Logs UI adds structured request/response summaries, safe Markdown rendering for model text,
+and direct links between logs and their trigger events while preserving the complete raw payload.
 `GET /api/stats` and `/stats` aggregate model usage globally and by model, plus tool advertisements,
 distinct chains, calls, outcomes, schema-token estimates, and execution duration. Pricing comes from
 `model-catalog.json`, selected by provider and model ID. The Stats page can refresh the catalog from

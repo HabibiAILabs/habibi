@@ -613,7 +613,7 @@ impl EventStore {
                     AVG(json_extract(logs.payload, '$.duration_ms')),
                     MAX(logs.occurred_at)
              FROM logs
-             LEFT JOIN events ON events.id = logs.trigger_event_id
+             INNER JOIN events ON events.id = logs.trigger_event_id
              WHERE logs.name = 'model.invocation.completed'
              GROUP BY 1
              ORDER BY COUNT(*) DESC, 1 ASC",
@@ -1069,6 +1069,7 @@ mod tests {
         assert_eq!(stats.cache_write_tokens, 5);
         assert_eq!(stats.estimated_cost_usd, Some(0.00125));
         assert_eq!(stats.models[0].model, "gpt-test");
+        assert!(stats.event_types.is_empty());
     }
 
     #[test]

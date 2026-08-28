@@ -68,8 +68,21 @@ function eventCard(event) {
 
   const metadata = document.createElement("div");
   metadata.className = "event-metadata";
-  metadata.append(meta("source", event.source), meta("event", event.id), meta("correlation", event.correlation_id));
-  if (event.causation_id) metadata.append(meta("caused by", event.causation_id));
+  metadata.append(
+    meta("source", event.source),
+    metaLink("event", event.id, `/events?event_id=${encodeURIComponent(event.id)}`),
+    metaLink("correlation", event.correlation_id, `/events?correlation_id=${encodeURIComponent(event.correlation_id)}`),
+  );
+  if (event.causation_id) {
+    metadata.append(metaLink("caused by", event.causation_id, `/events?event_id=${encodeURIComponent(event.causation_id)}`));
+  }
+
+  const links = document.createElement("nav");
+  links.className = "record-links";
+  links.append(
+    recordLink("Related logs", `/logs?trigger_event_id=${encodeURIComponent(event.id)}`),
+    recordLink("Correlation logs", `/logs?reaction_id=${encodeURIComponent(event.correlation_id)}`),
+  );
 
   const details = document.createElement("details");
   if (event.event_type === "model.invocation.started") details.className = "reaction-detail";
@@ -78,7 +91,7 @@ function eventCard(event) {
   const payload = document.createElement("pre");
   payload.textContent = JSON.stringify(event.payload, null, 2);
   details.append(summary, payload);
-  article.append(header, metadata, details);
+  article.append(header, metadata, links, details);
   return article;
 }
 
@@ -96,6 +109,29 @@ function meta(label, value) {
   element.title = value;
   element.textContent = `${label}: ${value}`;
   return element;
+}
+
+function metaLink(label, value, href) {
+  const element = document.createElement("a");
+  element.href = href;
+  element.title = value;
+  element.textContent = `${label}: ${value}`;
+  return element;
+}
+
+function recordLink(label, href) {
+  const link = document.createElement("a");
+  link.href = href;
+  link.textContent = label;
+  return link;
+}
+
+function applyUrlFilters() {
+  const parameters = new URLSearchParams(location.search);
+  for (const [name, value] of parameters) {
+    const field = form.elements.namedItem(name);
+    if (field) field.value = value;
+  }
 }
 
 form.elements.window.addEventListener("change", () => {
@@ -122,4 +158,5 @@ function showError(error) {
   list.append(message);
 }
 
+applyUrlFilters();
 queryEvents().catch(showError);

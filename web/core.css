@@ -70,10 +70,30 @@ button { font: inherit; }
 .event-identity strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .event-sequence { color: var(--green); font-family: ui-monospace, monospace; font-size: 12px; }
 .event-metadata { display: flex; flex-wrap: wrap; gap: 12px; margin: 10px 0; color: var(--muted); font-family: ui-monospace, monospace; font-size: 10px; }
-.event-metadata span { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.event-metadata span, .event-metadata a { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.event-metadata a, .record-links a, .usage-table a { color: var(--green); text-decoration: none; }
+.event-metadata a:hover, .record-links a:hover, .usage-table a:hover { text-decoration: underline; }
+.record-links { display: flex; flex-wrap: wrap; gap: 12px; margin: 8px 0 12px; font-size: 12px; }
 details { border-top: 1px solid var(--line); padding-top: 10px; }
 summary { cursor: pointer; color: #c5d0c7; font-size: 13px; }
 pre { max-height: 520px; overflow: auto; border-radius: 10px; padding: 14px; background: var(--bg); color: #cfe8d3; font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.model-structured { display: grid; gap: 14px; margin: 14px 0; }
+.model-structured h3, .model-structured h4 { margin: 0; }
+.model-summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+.model-summary-item { border: 1px solid var(--line); border-radius: 9px; padding: 9px 11px; background: var(--bg); }
+.model-summary-item span { display: block; color: var(--muted); font-size: 10px; }
+.model-summary-item strong { display: block; margin-top: 3px; font-size: 13px; }
+.model-tool-call { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.model-tool-call > strong { color: var(--green); font: 12px ui-monospace, monospace; }
+.markdown { color: var(--text); font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; }
+.markdown > :first-child { margin-top: 0; }
+.markdown > :last-child { margin-bottom: 0; }
+.markdown h1, .markdown h2, .markdown h3 { margin: 1em 0 .45em; line-height: 1.3; }
+.markdown p, .markdown ul, .markdown ol, .markdown blockquote { margin: .65em 0; }
+.markdown code { border-radius: 5px; padding: 2px 5px; background: var(--bg); color: #cfe8d3; font-family: ui-monospace, monospace; }
+.markdown pre code { padding: 0; background: transparent; }
+.markdown blockquote { border-left: 3px solid var(--green); padding-left: 12px; color: var(--muted); }
+.markdown a { color: var(--green); }
 .load-older { display: block; margin: 22px auto; cursor: pointer; color: var(--text); }
 .load-older[hidden] { display: none; }
 .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 28px; }
