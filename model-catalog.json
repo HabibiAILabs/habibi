@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "source": "models.dev bundled snapshot",
+  "updated_at": "2026-08-28T00:00:00Z",
+  "models": [
+    {
+      "provider": "openai-codex",
+      "id": "gpt-5.6-luna",
+      "name": "GPT-5.6 Luna",
+      "pricing": {
+        "input_usd_per_million": 0.2,
+        "output_usd_per_million": 1.2,
+        "cache_read_usd_per_million": 0.02,
+        "cache_write_usd_per_million": 0.25
+      },
+      "aliases": [],
+      "source": "models.dev",
+      "updated_at": "2026-08-28T00:00:00Z"
+    },
+    {
+      "provider": "openai-codex",
+      "id": "gpt-5.6-sol",
+      "name": "GPT-5.6 Sol",
+      "pricing": {
+        "input_usd_per_million": 4.0,
+        "output_usd_per_million": 20.0,
+        "cache_read_usd_per_million": 0.4,
+        "cache_write_usd_per_million": 5.0
+      },
+      "aliases": [],
+      "source": "models.dev",
+      "updated_at": "2026-08-28T00:00:00Z"
+    },
+    {
+      "provider": "openai-codex",
+      "id": "gpt-5.6-terra",
+      "name": "GPT-5.6 Terra",
+      "pricing": {
+        "input_usd_per_million": 2.0,
+        "output_usd_per_million": 12.0,
+        "cache_read_usd_per_million": 0.2,
+        "cache_write_usd_per_million": 2.5
+      },
+      "aliases": [],
+      "source": "models.dev",
+      "updated_at": "2026-08-28T00:00:00Z"
+    }
+  ]
+}

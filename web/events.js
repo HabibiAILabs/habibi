@@ -50,7 +50,7 @@ function renderEvents() {
 
 function eventCard(event) {
   const article = document.createElement("article");
-  article.className = `event-card${event.event_type.startsWith("model.invocation.") ? " model-event" : ""}`;
+  article.className = `event-card${event.event_type.startsWith("action.result.failed") ? " model-event" : ""}`;
 
   const header = document.createElement("header");
   const identity = document.createElement("div");
@@ -83,12 +83,9 @@ function eventCard(event) {
 }
 
 function detailLabel(event) {
-  if (event.event_type === "model.invocation.started") return "Exact LLM request (instructions and input)";
-  if (event.event_type === "model.invocation.completed") return "Model response and usage";
-  if (event.event_type === "model.invocation.failed") return "Model failure";
-  if (event.event_type === "action.proposed") return "Tool call and arguments";
-  if (event.event_type === "action.succeeded") return "Tool result and effect events";
-  if (event.event_type === "action.failed") return "Tool failure";
+  if (event.event_type === "action.requested") return "Requested tool and arguments";
+  if (event.event_type === "action.result.succeeded") return "Tool result and effect events";
+  if (event.event_type === "action.result.failed") return "Tool failure result";
   if (event.event_type === "action.batch.completed") return "Coalesced batch result references";
   if (event.event_type === "event.link.created") return "Semantic event link";
   return "Event payload";
@@ -110,12 +107,6 @@ form.addEventListener("submit", (event) => {
   queryEvents().catch(showError);
 });
 loadOlder.addEventListener("click", () => queryEvents({ older: true }).catch(showError));
-document.querySelector("#model-reactions").addEventListener("click", () => {
-  form.reset();
-  form.elements.prefix.value = "model.invocation.";
-  customTimes.forEach((element) => { element.hidden = true; });
-  queryEvents().catch(showError);
-});
 document.querySelector("#actions").addEventListener("click", () => {
   form.reset();
   form.elements.prefix.value = "action.";

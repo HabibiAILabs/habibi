@@ -71,8 +71,6 @@ pub struct RouteOutcome {
     pub body: Option<String>,
     pub content_type: Option<String>,
     pub emit: Option<EventDraft>,
-    #[serde(default)]
-    pub react: bool,
 }
 
 fn default_status() -> u16 {

@@ -3,39 +3,69 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Habibi</title>
+  <title>Habibi Chat</title>
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
   <main class="app">
-    <aside class="sidebar">
+    <aside class="sidebar" id="sidebar">
       <div class="brand">
-        <div>
-          <span class="eyebrow">HABIBI</span>
-          <h1>Conversations</h1>
-        </div>
-        <button id="new-session" class="icon-button" title="New chat">＋</button>
+        <a class="brand-home" href="/" title="Habibi homepage" aria-label="Go to Habibi homepage">
+          <img src="/assets/habibi-logo.svg" alt="">
+          <div>
+            <span class="eyebrow">HABIBI</span>
+            <h1>Conversations</h1>
+          </div>
+        </a>
+        <button id="new-session" class="icon-button" type="button" title="New chat (Ctrl/⌘ N)" aria-label="New chat">＋</button>
       </div>
+      <label class="session-search">
+        <span class="sr-only">Search conversations</span>
+        <input id="session-search" type="search" placeholder="Search chats…" autocomplete="off">
+        <kbd>⌘K</kbd>
+      </label>
       <nav id="sessions" aria-label="Chat sessions"></nav>
+      <div class="sidebar-footer">
+        <a href="/">Habibi home</a><a href="/events">Events</a><a href="/logs">Logs</a><a href="/stats">Stats</a>
+      </div>
     </aside>
 
     <section class="conversation">
       <header class="conversation-header">
-        <div>
-          <span class="eyebrow">ONE CONTINUOUS MEMORY</span>
-          <h2 id="session-title">New chat</h2>
+        <button id="mobile-sidebar" class="icon-button mobile-only" type="button" aria-label="Open conversations">☰</button>
+        <div class="conversation-heading">
+          <span class="eyebrow">SESSION VIEW</span>
+          <button id="rename-title" class="title-button" type="button" title="Rename conversation">
+            <h2 id="session-title">New chat</h2><span aria-hidden="true">✎</span>
+          </button>
         </div>
-        <span id="status" class="status">ready</span>
+        <div class="header-actions">
+          <span id="status" class="status" role="status" aria-live="polite">ready</span>
+          <button id="delete-session" class="icon-button danger-button" type="button" title="Remove conversation" aria-label="Remove conversation">⌫</button>
+        </div>
       </header>
 
       <div id="messages" class="messages" aria-live="polite"></div>
 
-      <form id="composer" class="composer">
-        <textarea id="message-input" rows="1" placeholder="Message Habibi…" required></textarea>
-        <button type="submit">Send</button>
-      </form>
+      <div class="composer-wrap">
+        <form id="composer" class="composer">
+          <textarea id="message-input" rows="1" placeholder="Message Habibi…" required></textarea>
+          <button id="send-message" type="submit">Send</button>
+        </form>
+        <div class="composer-hint"><span><kbd>Enter</kbd> send · <kbd>Shift Enter</kbd> new line · <kbd>Ctrl/⌘ Enter</kbd> send</span><span>Habibi may settle without posting a reply.</span></div>
+      </div>
     </section>
   </main>
+
+  <dialog id="session-dialog">
+    <form id="session-dialog-form" method="dialog">
+      <div class="dialog-heading"><span class="eyebrow" id="dialog-eyebrow">CONVERSATION</span><h3 id="dialog-title">New conversation</h3></div>
+      <p id="dialog-description" class="dialog-description"></p>
+      <label id="dialog-name-label">Name<input id="dialog-name" maxlength="120" autocomplete="off" placeholder="New chat"></label>
+      <div class="dialog-actions"><button class="secondary" value="cancel" type="button" id="dialog-cancel">Cancel</button><button class="primary" type="submit" id="dialog-confirm">Create</button></div>
+    </form>
+  </dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   <script src="./app.js" type="module"></script>
 </body>
 </html>

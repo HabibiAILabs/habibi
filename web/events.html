@@ -9,12 +9,12 @@
 <body>
   <header class="topbar">
     <a class="wordmark" href="/"><img src="/assets/habibi-logo.svg" alt="">Habibi</a>
-    <nav class="topnav"><a href="/events">Events</a><a href="/extensions">Extensions</a></nav>
+    <nav class="topnav"><a href="/events">Events</a><a href="/logs">Logs</a><a href="/stats">Stats</a><a href="/extensions">Extensions</a></nav>
   </header>
   <main class="events-shell">
     <div class="page-heading">
       <div><p class="eyebrow">DURABLE HISTORY</p><h1>Events</h1></div>
-      <p>Inspect Habibi's canonical event stream, including complete model prompts, reactions, and responses.</p>
+      <p>Inspect Habibi's canonical domain events, action requests and results, effects, and semantic links.</p>
     </div>
 
     <form id="event-filters" class="event-filters">
@@ -28,8 +28,8 @@
       </label>
       <label>Event type<input name="type" list="event-types" placeholder="e.g. model.invocation.completed"></label>
       <datalist id="event-types">
-        <option value="model.invocation.started"><option value="model.invocation.completed">
-        <option value="model.invocation.failed"><option value="chat.message.created">
+        <option value="action.requested"><option value="action.result.succeeded">
+        <option value="action.result.failed"><option value="chat.message.created">
         <option value="chat.session.created"><option value="runtime.started">
       </datalist>
       <label>Type prefix<input name="prefix" placeholder="e.g. model."></label>
@@ -42,7 +42,6 @@
       <label class="custom-time" hidden>From<input name="from" type="datetime-local"></label>
       <label class="custom-time" hidden>To<input name="to" type="datetime-local"></label>
       <button class="primary" type="submit">Query events</button>
-      <button class="secondary" id="model-reactions" type="button">Model reactions</button>
       <button class="secondary" id="actions" type="button">Tool actions</button>
     </form>
 

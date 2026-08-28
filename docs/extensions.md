@@ -76,8 +76,7 @@ habibi.tools.register({
     type = "object",
     properties = { id = { type = "string" } },
     required = { "id" }
-  },
-  continuation = "required"
+  }
 }, function(arguments, context)
   return {
     result = { item = lookup(arguments.id) },
@@ -86,11 +85,11 @@ habibi.tools.register({
 end)
 ```
 
-`continuation` is `required` when the model needs the result, or `terminal` for outward effects
-such as sending a message. A handler may return namespaced effect events. Habibi records every
-proposal, start, result, failure, and batch barrier while preserving the reaction correlation ID.
-Calls emitted in one model turn form a batch; all results are gathered and returned in one
-continuation in original call order.
+A handler may return namespaced effect events. Habibi records every action request and result as
+an event, records execution diagnostics as logs, and gathers all calls from one processed event
+into a batch. The resulting `action.batch.completed` event is queued with all results in original
+call order and is processed as the next event. There is no internal turn limit: the reaction
+settles when the event queue is empty.
 
 ## Emitting events and requesting reactions
 
@@ -106,9 +105,8 @@ return {
 }
 ```
 
-Set `react = true` to invoke the model after the event is appended. The extension registers a
-context mapper; user-visible effects are performed by model tools rather than an automatic
-response mapper:
+Every emitted event enters the reactor after it is appended. The extension registers a context
+mapper; user-visible effects are performed by model tools:
 
 ```lua
 habibi.reactions.context(function(trigger)
@@ -118,8 +116,8 @@ habibi.reactions.context(function(trigger)
 end)
 ```
 
-All model invocations, actions, tool effects, and continuations share the trigger's correlation
-ID and are connected through causation IDs and batch result references.
+All action requests, results, tool effects, batch barriers, and operational logs share the
+trigger's correlation ID and are connected through causation IDs and result references.
 
 ## Event queries
 

@@ -1,0 +1,13 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Stats · Habibi</title><link rel="stylesheet" href="/assets/core.css"></head><body>
+<header class="topbar"><a class="wordmark" href="/"><img src="/assets/habibi-logo.svg" alt="">Habibi</a><nav class="topnav"><a href="/events">Events</a><a href="/logs">Logs</a><a href="/stats">Stats</a><a href="/extensions">Extensions</a></nav></header>
+<main class="stats-shell"><div class="page-heading"><div><p class="eyebrow">RUNTIME ACCOUNTING</p><h1>Usage & cost</h1></div><div><p class="muted">Token usage, prompt-cache effectiveness, and estimated cost across model invocations.</p><button class="secondary refresh-prices" id="refresh-prices" type="button">Refresh model prices</button></div></div>
+<section class="stats-grid">
+<div class="stat-card"><span>Estimated cost</span><strong id="total-cost">—</strong><small id="cost-coverage"></small></div>
+<div class="stat-card"><span>Total tokens</span><strong id="total-tokens">—</strong><small id="invocations"></small></div>
+<div class="stat-card"><span>Cache reads</span><strong id="cache-tokens">—</strong><small id="cache-rate"></small></div>
+<div class="stat-card"><span>Output tokens</span><strong id="output-tokens">—</strong><small id="failed-invocations"></small></div>
+</section>
+<section class="stats-section"><h2>By model</h2><table class="usage-table"><thead><tr><th>Model</th><th>Invocations</th><th>Input</th><th>Cache read</th><th>Cache write</th><th>Output</th><th>Total</th><th>Est. cost</th></tr></thead><tbody id="model-usage"></tbody></table></section>
+<section class="stats-section"><h2>Model catalog</h2><div class="pricing-note" id="catalog-status">Loading catalog…</div><table class="usage-table"><thead><tr><th>Provider / model</th><th>Input / 1M</th><th>Cache read / 1M</th><th>Cache write / 1M</th><th>Output / 1M</th><th>Price updated</th></tr></thead><tbody id="model-catalog"></tbody></table></section>
+<section class="stats-section"><div class="pricing-note" id="pricing-note">Each invocation stores the exact catalog entry and rates used, so refreshing prices never changes historical estimates. The bundled catalog is refreshed from <code>models.dev</code>; configure another source with <code>HABIBI_MODEL_CATALOG_URL</code>.</div></section>
+</main><script type="module" src="/assets/stats.js"></script></body></html>

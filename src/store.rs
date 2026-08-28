@@ -3,9 +3,10 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::Serialize;
 use uuid::Uuid;
 
-use crate::event::{Event, StoredEvent};
+use crate::event::{Event, LogEntry, StoredEvent, StoredLog};
 
 pub type SharedEventStore = Arc<Mutex<EventStore>>;
 
@@ -23,6 +24,54 @@ pub struct StoreEventQuery {
     pub occurred_before: Option<DateTime<Utc>>,
     pub payload_contains: Option<String>,
     pub limit: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct StoreLogQuery {
+    pub level: Option<String>,
+    pub category: Option<String>,
+    pub name: Option<String>,
+    pub name_prefix: Option<String>,
+    pub reaction_id: Option<Uuid>,
+    pub trigger_event_id: Option<Uuid>,
+    pub correlation_id: Option<Uuid>,
+    pub batch_id: Option<String>,
+    pub action_id: Option<String>,
+    pub tool_call_id: Option<String>,
+    pub before_sequence: Option<i64>,
+    pub after_sequence: Option<i64>,
+    pub occurred_after: Option<DateTime<Utc>>,
+    pub occurred_before: Option<DateTime<Utc>>,
+    pub payload_contains: Option<String>,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelUsageStats {
+    pub model: String,
+    pub invocations: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub total_tokens: u64,
+    pub estimated_cost_usd: Option<f64>,
+    pub priced_invocations: u64,
+    pub last_invocation_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UsageStats {
+    pub invocations: u64,
+    pub failed_invocations: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub total_tokens: u64,
+    pub estimated_cost_usd: Option<f64>,
+    pub priced_invocations: u64,
+    pub models: Vec<ModelUsageStats>,
 }
 
 pub struct EventStore {
@@ -50,6 +99,26 @@ impl EventStore {
 
              CREATE INDEX IF NOT EXISTS events_by_type_sequence
                  ON events(event_type, sequence);
+
+             CREATE TABLE IF NOT EXISTS logs (
+                 sequence         INTEGER PRIMARY KEY AUTOINCREMENT,
+                 id               TEXT NOT NULL UNIQUE,
+                 occurred_at      TEXT NOT NULL,
+                 level            TEXT NOT NULL,
+                 category         TEXT NOT NULL,
+                 name             TEXT NOT NULL,
+                 reaction_id      TEXT NOT NULL,
+                 trigger_event_id TEXT,
+                 correlation_id   TEXT NOT NULL,
+                 batch_id         TEXT,
+                 action_id        TEXT,
+                 tool_call_id     TEXT,
+                 span_id          TEXT,
+                 parent_span_id   TEXT,
+                 payload          TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS logs_by_name_sequence ON logs(name, sequence);
+             CREATE INDEX IF NOT EXISTS logs_by_reaction_sequence ON logs(reaction_id, sequence);
 
              CREATE TABLE IF NOT EXISTS extension_kv (
                  extension_id TEXT NOT NULL,
@@ -94,7 +163,9 @@ impl EventStore {
              );",
         )?;
 
-        Ok(Self { connection })
+        let store = Self { connection };
+        store.migrate_operational_events_to_logs()?;
+        Ok(store)
     }
 
     pub fn shared(self) -> SharedEventStore {
@@ -133,6 +204,32 @@ impl EventStore {
             )?;
         }
         Ok(sequence)
+    }
+
+    pub fn append_log(&self, log: &LogEntry) -> Result<i64> {
+        self.connection.execute(
+            "INSERT INTO logs (
+                id, occurred_at, level, category, name, reaction_id, trigger_event_id,
+                correlation_id, batch_id, action_id, tool_call_id, span_id, parent_span_id, payload
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                log.id.to_string(),
+                log.occurred_at.to_rfc3339(),
+                log.level,
+                log.category,
+                log.name,
+                log.reaction_id.to_string(),
+                log.trigger_event_id.map(|id| id.to_string()),
+                log.correlation_id.to_string(),
+                log.batch_id,
+                log.action_id,
+                log.tool_call_id,
+                log.span_id,
+                log.parent_span_id,
+                serde_json::to_string(&log.payload)?
+            ],
+        )?;
+        Ok(self.connection.last_insert_rowid())
     }
 
     pub fn query_events(&self, query: &StoreEventQuery) -> Result<Vec<StoredEvent>> {
@@ -318,6 +415,192 @@ impl EventStore {
         Ok(())
     }
 
+    pub fn query_logs(&self, query: &StoreLogQuery) -> Result<Vec<StoredLog>> {
+        let occurred_after = query.occurred_after.map(|value| value.to_rfc3339());
+        let occurred_before = query.occurred_before.map(|value| value.to_rfc3339());
+        let mut statement = self.connection.prepare(
+            "SELECT sequence, id, occurred_at, level, category, name, reaction_id,
+                    trigger_event_id, correlation_id, batch_id, action_id, tool_call_id,
+                    span_id, parent_span_id, payload
+             FROM (
+               SELECT * FROM logs WHERE
+                 (?1 IS NULL OR level = ?1) AND (?2 IS NULL OR category = ?2)
+                 AND (?3 IS NULL OR name = ?3)
+                 AND (?4 IS NULL OR substr(name, 1, length(?4)) = ?4)
+                 AND (?5 IS NULL OR reaction_id = ?5)
+                 AND (?6 IS NULL OR trigger_event_id = ?6)
+                 AND (?7 IS NULL OR correlation_id = ?7)
+                 AND (?8 IS NULL OR batch_id = ?8) AND (?9 IS NULL OR action_id = ?9)
+                 AND (?10 IS NULL OR tool_call_id = ?10)
+                 AND (?11 IS NULL OR sequence < ?11) AND (?12 IS NULL OR sequence > ?12)
+                 AND (?13 IS NULL OR occurred_at >= ?13) AND (?14 IS NULL OR occurred_at <= ?14)
+                 AND (?15 IS NULL OR instr(lower(payload), lower(?15)) > 0)
+               ORDER BY sequence DESC LIMIT ?16
+             ) ORDER BY sequence ASC",
+        )?;
+        let rows = statement.query_map(
+            params![
+                query.level,
+                query.category,
+                query.name,
+                query.name_prefix,
+                query.reaction_id.map(|id| id.to_string()),
+                query.trigger_event_id.map(|id| id.to_string()),
+                query.correlation_id.map(|id| id.to_string()),
+                query.batch_id,
+                query.action_id,
+                query.tool_call_id,
+                query.before_sequence,
+                query.after_sequence,
+                occurred_after,
+                occurred_before,
+                query.payload_contains,
+                query.limit as i64
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, Option<String>>(11)?,
+                    row.get::<_, Option<String>>(12)?,
+                    row.get::<_, Option<String>>(13)?,
+                    row.get::<_, String>(14)?,
+                ))
+            },
+        )?;
+        rows.map(|row| stored_log_from_parts(row?)).collect()
+    }
+
+    pub fn get_log(&self, log_id: &str) -> Result<Option<StoredLog>> {
+        let row = self
+            .connection
+            .query_row(
+                "SELECT sequence, id, occurred_at, level, category, name, reaction_id,
+                    trigger_event_id, correlation_id, batch_id, action_id, tool_call_id,
+                    span_id, parent_span_id, payload FROM logs WHERE id = ?1",
+                [log_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, Option<String>>(9)?,
+                        row.get::<_, Option<String>>(10)?,
+                        row.get::<_, Option<String>>(11)?,
+                        row.get::<_, Option<String>>(12)?,
+                        row.get::<_, Option<String>>(13)?,
+                        row.get::<_, String>(14)?,
+                    ))
+                },
+            )
+            .optional()?;
+        row.map(stored_log_from_parts).transpose()
+    }
+
+    pub fn usage_stats(&self) -> Result<UsageStats> {
+        let mut statement = self.connection.prepare(
+            "SELECT
+                COALESCE(json_extract(payload, '$.model'), 'unknown'),
+                COUNT(*),
+                COALESCE(SUM(json_extract(payload, '$.usage.input')), 0),
+                COALESCE(SUM(json_extract(payload, '$.usage.output')), 0),
+                COALESCE(SUM(json_extract(payload, '$.usage.cache_read')), 0),
+                COALESCE(SUM(json_extract(payload, '$.usage.cache_write')), 0),
+                COALESCE(SUM(json_extract(payload, '$.usage.total_tokens')), 0),
+                SUM(json_extract(payload, '$.estimated_cost.total_usd')),
+                COUNT(json_extract(payload, '$.estimated_cost.total_usd')),
+                MAX(occurred_at)
+             FROM logs
+             WHERE name = 'model.invocation.completed'
+             GROUP BY COALESCE(json_extract(payload, '$.model'), 'unknown')
+             ORDER BY COUNT(*) DESC, 1 ASC",
+        )?;
+        let models = statement
+            .query_map([], |row| {
+                Ok(ModelUsageStats {
+                    model: row.get(0)?,
+                    invocations: row.get::<_, i64>(1)? as u64,
+                    input_tokens: row.get::<_, i64>(2)? as u64,
+                    output_tokens: row.get::<_, i64>(3)? as u64,
+                    cache_read_tokens: row.get::<_, i64>(4)? as u64,
+                    cache_write_tokens: row.get::<_, i64>(5)? as u64,
+                    total_tokens: row.get::<_, i64>(6)? as u64,
+                    estimated_cost_usd: row.get(7)?,
+                    priced_invocations: row.get::<_, i64>(8)? as u64,
+                    last_invocation_at: row.get(9)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let failed_invocations = self.connection.query_row(
+            "SELECT COUNT(*) FROM logs WHERE name = 'model.invocation.failed'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )? as u64;
+        let estimated_cost_usd = models
+            .iter()
+            .filter_map(|model| model.estimated_cost_usd)
+            .reduce(|left, right| left + right);
+        Ok(UsageStats {
+            invocations: models.iter().map(|model| model.invocations).sum(),
+            failed_invocations,
+            input_tokens: models.iter().map(|model| model.input_tokens).sum(),
+            output_tokens: models.iter().map(|model| model.output_tokens).sum(),
+            cache_read_tokens: models.iter().map(|model| model.cache_read_tokens).sum(),
+            cache_write_tokens: models.iter().map(|model| model.cache_write_tokens).sum(),
+            total_tokens: models.iter().map(|model| model.total_tokens).sum(),
+            estimated_cost_usd,
+            priced_invocations: models.iter().map(|model| model.priced_invocations).sum(),
+            models,
+        })
+    }
+
+    fn migrate_operational_events_to_logs(&self) -> Result<()> {
+        self.connection.execute_batch(
+            "INSERT OR IGNORE INTO logs (
+                id, occurred_at, level, category, name, reaction_id, trigger_event_id,
+                correlation_id, payload
+             )
+             SELECT id, occurred_at,
+                    CASE WHEN event_type LIKE '%.failed' THEN 'error' ELSE 'info' END,
+                    CASE
+                      WHEN event_type LIKE 'model.%' THEN 'model'
+                      WHEN event_type LIKE 'action.%' THEN 'action'
+                      WHEN event_type LIKE 'reaction.%' THEN 'reactor'
+                      ELSE 'runtime'
+                    END,
+                    event_type, correlation_id, causation_id, correlation_id, payload
+             FROM events
+             WHERE event_type = 'runtime.started'
+                OR event_type LIKE 'model.invocation.%'
+                OR event_type IN ('action.batch.created', 'action.proposed', 'action.started', 'action.succeeded', 'action.failed')
+                OR (event_type = 'action.batch.completed' AND json_extract(payload, '$.requires_continuation') IS NOT NULL)
+                OR event_type LIKE 'reaction.%';
+
+             DELETE FROM events
+             WHERE event_type = 'runtime.started'
+                OR event_type LIKE 'model.invocation.%'
+                OR event_type IN ('action.batch.created', 'action.proposed', 'action.started', 'action.succeeded', 'action.failed')
+                OR (event_type = 'action.batch.completed' AND json_extract(payload, '$.requires_continuation') IS NOT NULL)
+                OR event_type LIKE 'reaction.%';",
+        )?;
+        Ok(())
+    }
+
     pub fn extension_enabled(&self, extension_id: &str) -> Result<bool> {
         Ok(self
             .connection
@@ -431,6 +714,65 @@ fn stored_event_from_parts(parts: StoredEventParts) -> Result<StoredEvent> {
     })
 }
 
+type StoredLogParts = (
+    i64,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    String,
+);
+
+fn stored_log_from_parts(parts: StoredLogParts) -> Result<StoredLog> {
+    let (
+        sequence,
+        id,
+        occurred_at,
+        level,
+        category,
+        name,
+        reaction_id,
+        trigger_event_id,
+        correlation_id,
+        batch_id,
+        action_id,
+        tool_call_id,
+        span_id,
+        parent_span_id,
+        payload,
+    ) = parts;
+    Ok(StoredLog {
+        sequence,
+        log: LogEntry {
+            id: Uuid::parse_str(&id)?,
+            occurred_at: DateTime::parse_from_rfc3339(&occurred_at)?.with_timezone(&Utc),
+            level,
+            category,
+            name,
+            reaction_id: Uuid::parse_str(&reaction_id)?,
+            trigger_event_id: trigger_event_id
+                .map(|id| Uuid::parse_str(&id))
+                .transpose()?,
+            correlation_id: Uuid::parse_str(&correlation_id)?,
+            batch_id,
+            action_id,
+            tool_call_id,
+            span_id,
+            parent_span_id,
+            payload: serde_json::from_str(&payload)?,
+        },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -526,6 +868,107 @@ mod tests {
             .unwrap();
         assert_eq!(links.len(), 1);
         assert_eq!(links[0]["event"]["id"], from.id.to_string());
+    }
+
+    #[test]
+    fn aggregates_usage_cache_and_estimated_cost() {
+        let file = NamedTempFile::new().unwrap();
+        let store = EventStore::open(file.path().to_str().unwrap()).unwrap();
+        let reaction_id = Uuid::now_v7();
+        store
+            .append_log(&LogEntry::new(
+                "info",
+                "model",
+                "model.invocation.completed",
+                reaction_id,
+                None,
+                reaction_id,
+                json!({
+                    "model": "gpt-test",
+                    "usage": { "input": 80, "output": 20, "cache_read": 40, "cache_write": 5, "total_tokens": 145 },
+                    "estimated_cost": { "total_usd": 0.00125 }
+                }),
+            ))
+            .unwrap();
+        let stats = store.usage_stats().unwrap();
+        assert_eq!(stats.invocations, 1);
+        assert_eq!(stats.cache_read_tokens, 40);
+        assert_eq!(stats.cache_write_tokens, 5);
+        assert_eq!(stats.estimated_cost_usd, Some(0.00125));
+        assert_eq!(stats.models[0].model, "gpt-test");
+    }
+
+    #[test]
+    fn migrates_legacy_operational_events_to_logs() {
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path().to_str().unwrap();
+        let correlation_id = Uuid::now_v7();
+        {
+            let store = EventStore::open(path).unwrap();
+            store
+                .append(&Event::new(
+                    "model.invocation.started",
+                    "habibi",
+                    correlation_id,
+                    None,
+                    json!({ "request": {} }),
+                ))
+                .unwrap();
+        }
+        let store = EventStore::open(path).unwrap();
+        assert!(
+            store
+                .query_events(&StoreEventQuery {
+                    limit: 10,
+                    ..StoreEventQuery::default()
+                })
+                .unwrap()
+                .is_empty()
+        );
+        let logs = store
+            .query_logs(&StoreLogQuery {
+                limit: 10,
+                ..StoreLogQuery::default()
+            })
+            .unwrap();
+        assert_eq!(logs[0].log.name, "model.invocation.started");
+    }
+
+    #[test]
+    fn stores_and_queries_operational_logs_separately() {
+        let file = NamedTempFile::new().unwrap();
+        let store = EventStore::open(file.path().to_str().unwrap()).unwrap();
+        let reaction_id = Uuid::now_v7();
+        store
+            .append_log(&LogEntry::new(
+                "info",
+                "model",
+                "model.invocation.started",
+                reaction_id,
+                None,
+                reaction_id,
+                json!({ "request": { "model": "test" } }),
+            ))
+            .unwrap();
+        let logs = store
+            .query_logs(&StoreLogQuery {
+                category: Some("model".into()),
+                payload_contains: Some("test".into()),
+                limit: 10,
+                ..StoreLogQuery::default()
+            })
+            .unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].log.name, "model.invocation.started");
+        assert!(
+            store
+                .query_events(&StoreEventQuery {
+                    limit: 10,
+                    ..StoreEventQuery::default()
+                })
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

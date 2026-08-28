@@ -41,6 +41,60 @@ pub struct StoredEvent {
     pub event: Event,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogEntry {
+    pub id: Uuid,
+    pub occurred_at: DateTime<Utc>,
+    pub level: String,
+    pub category: String,
+    pub name: String,
+    pub reaction_id: Uuid,
+    pub trigger_event_id: Option<Uuid>,
+    pub correlation_id: Uuid,
+    pub batch_id: Option<String>,
+    pub action_id: Option<String>,
+    pub tool_call_id: Option<String>,
+    pub span_id: Option<String>,
+    pub parent_span_id: Option<String>,
+    pub payload: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredLog {
+    pub sequence: i64,
+    #[serde(flatten)]
+    pub log: LogEntry,
+}
+
+impl LogEntry {
+    pub fn new(
+        level: impl Into<String>,
+        category: impl Into<String>,
+        name: impl Into<String>,
+        reaction_id: Uuid,
+        trigger_event_id: Option<Uuid>,
+        correlation_id: Uuid,
+        payload: Value,
+    ) -> Self {
+        Self {
+            id: Uuid::now_v7(),
+            occurred_at: Utc::now(),
+            level: level.into(),
+            category: category.into(),
+            name: name.into(),
+            reaction_id,
+            trigger_event_id,
+            correlation_id,
+            batch_id: None,
+            action_id: None,
+            tool_call_id: None,
+            span_id: None,
+            parent_span_id: None,
+            payload,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConversationMessage {
     pub role: String,

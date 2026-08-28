@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use crate::{
     auth::CredentialStore,
+    catalog::{CatalogManager, CatalogModel, ModelCatalog, ModelPricing},
     event::ConversationMessage,
     tool::{ToolCall, ToolDefinition, provider_tool_name},
 };
@@ -23,6 +24,21 @@ pub struct ModelConfig {
     pub model: String,
     pub thinking: Option<String>,
     pub credentials: CredentialStore,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EstimatedCost {
+    pub currency: &'static str,
+    pub input_usd: f64,
+    pub output_usd: f64,
+    pub cache_read_usd: f64,
+    pub cache_write_usd: f64,
+    pub total_usd: f64,
+    pub pricing: ModelPricing,
+    pub catalog_provider: String,
+    pub catalog_model_id: String,
+    pub catalog_source: Option<String>,
+    pub catalog_updated_at: Option<String>,
 }
 
 impl ModelConfig {
@@ -64,6 +80,7 @@ fn nonempty_env(name: &str) -> Option<String> {
 pub struct ModelClient {
     client: Client,
     config: ModelConfig,
+    catalog: CatalogManager,
 }
 
 #[derive(Debug)]
@@ -71,6 +88,7 @@ pub struct ModelResponse {
     pub content: String,
     pub output_items: Vec<Value>,
     pub tool_calls: Vec<ToolCall>,
+    pub provider_response: Value,
     pub provider: Option<String>,
     pub model: Option<String>,
     pub usage: Option<TokenUsage>,
@@ -86,11 +104,15 @@ pub struct TokenUsage {
 }
 
 impl ModelClient {
-    pub fn new(config: ModelConfig) -> Result<Self> {
+    pub fn new(config: ModelConfig, catalog: CatalogManager) -> Result<Self> {
         let client = Client::builder()
             .user_agent(concat!("habibi/", env!("CARGO_PKG_VERSION")))
             .build()?;
-        Ok(Self { client, config })
+        Ok(Self {
+            client,
+            config,
+            catalog,
+        })
     }
 
     pub fn model_name(&self) -> &str {
@@ -137,6 +159,44 @@ impl ModelClient {
 
     pub fn endpoint(&self) -> &str {
         &self.config.endpoint
+    }
+
+    pub fn catalog(&self) -> Result<ModelCatalog> {
+        self.catalog.snapshot()
+    }
+
+    pub async fn refresh_catalog(&self) -> Result<ModelCatalog> {
+        self.catalog.refresh(&self.client).await
+    }
+
+    pub fn estimate_cost(&self, usage: &TokenUsage) -> Option<EstimatedCost> {
+        let model: CatalogModel = self
+            .catalog
+            .lookup("openai-codex", &self.config.model)
+            .ok()??;
+        let pricing = &model.pricing;
+        let input_rate = pricing.input_usd_per_million;
+        let output_rate = pricing.output_usd_per_million;
+        let cache_read_rate = pricing.cache_read_usd_per_million.unwrap_or(input_rate);
+        let cache_write_rate = pricing.cache_write_usd_per_million.unwrap_or(input_rate);
+        let cost = |tokens: Option<u64>, rate: f64| tokens.unwrap_or(0) as f64 * rate / 1_000_000.0;
+        let input_usd = cost(usage.input, input_rate);
+        let output_usd = cost(usage.output, output_rate);
+        let cache_read_usd = cost(usage.cache_read, cache_read_rate);
+        let cache_write_usd = cost(usage.cache_write, cache_write_rate);
+        Some(EstimatedCost {
+            currency: "USD",
+            input_usd,
+            output_usd,
+            cache_read_usd,
+            cache_write_usd,
+            total_usd: input_usd + output_usd + cache_read_usd + cache_write_usd,
+            pricing: pricing.clone(),
+            catalog_provider: model.provider,
+            catalog_model_id: model.id,
+            catalog_source: model.source,
+            catalog_updated_at: model.updated_at,
+        })
     }
 
     pub async fn invoke(&self, body: Value) -> Result<ModelResponse> {
@@ -298,6 +358,7 @@ fn parse_sse_response(sse: &str, model: &str) -> Result<ModelResponse> {
         content,
         output_items,
         tool_calls,
+        provider_response: response.clone(),
         provider: Some("openai-codex".into()),
         model: Some(model.into()),
         usage,
@@ -309,11 +370,19 @@ fn parse_usage(value: &Value) -> TokenUsage {
         .pointer("/input_tokens_details/cached_tokens")
         .and_then(Value::as_u64);
     let total_input = value.get("input_tokens").and_then(Value::as_u64);
+    let cache_write = value
+        .pointer("/input_tokens_details/cache_write_tokens")
+        .or_else(|| value.pointer("/input_tokens_details/cache_creation_tokens"))
+        .and_then(Value::as_u64);
     TokenUsage {
-        input: total_input.map(|input| input.saturating_sub(cached.unwrap_or(0))),
+        input: total_input.map(|input| {
+            input
+                .saturating_sub(cached.unwrap_or(0))
+                .saturating_sub(cache_write.unwrap_or(0))
+        }),
         output: value.get("output_tokens").and_then(Value::as_u64),
         cache_read: cached,
-        cache_write: None,
+        cache_write,
         total_tokens: value.get("total_tokens").and_then(Value::as_u64),
     }
 }

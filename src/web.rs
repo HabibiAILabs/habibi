@@ -7,7 +7,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, Method, StatusCode, Uri, header},
     response::{IntoResponse, Response},
-    routing::{any, get, put},
+    routing::{any, get, post, put},
 };
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
@@ -18,7 +18,7 @@ use crate::{
     event::Event,
     extension::{ExtensionManager, RequestData, RouteOutcome},
     reactor::Reactor,
-    store::{SharedEventStore, StoreEventQuery},
+    store::{SharedEventStore, StoreEventQuery, StoreLogQuery},
 };
 
 #[derive(Clone)]
@@ -34,11 +34,19 @@ pub fn router(state: WebState) -> Router {
         .route("/", get(home_page))
         .route("/extensions", get(extensions_page))
         .route("/events", get(events_page))
+        .route("/logs", get(logs_page))
+        .route("/stats", get(stats_page))
         .route("/assets/habibi-logo.svg", get(logo_asset))
         .route("/assets/core.css", get(core_css_asset))
         .route("/assets/extensions.js", get(extensions_js_asset))
         .route("/assets/events.js", get(events_js_asset))
+        .route("/assets/logs.js", get(logs_js_asset))
+        .route("/assets/stats.js", get(stats_js_asset))
         .route("/api/events", get(list_events))
+        .route("/api/logs", get(list_logs))
+        .route("/api/stats", get(stats))
+        .route("/api/models", get(models))
+        .route("/api/models/refresh", post(refresh_models))
         .route("/api/extensions", get(list_extensions))
         .route("/api/extensions/{extension_id}", put(toggle_extension))
         .route("/extensions/{extension_id}", any(extension_root))
@@ -59,6 +67,14 @@ async fn events_page() -> Response {
     html_response(include_str!("../web/events.html"))
 }
 
+async fn logs_page() -> Response {
+    html_response(include_str!("../web/logs.html"))
+}
+
+async fn stats_page() -> Response {
+    html_response(include_str!("../web/stats.html"))
+}
+
 async fn logo_asset() -> Response {
     asset_response("image/svg+xml", include_bytes!("../web/habibi-logo.svg"))
 }
@@ -71,6 +87,20 @@ async fn extensions_js_asset() -> Response {
     asset_response(
         "text/javascript; charset=utf-8",
         include_bytes!("../web/extensions.js"),
+    )
+}
+
+async fn stats_js_asset() -> Response {
+    asset_response(
+        "text/javascript; charset=utf-8",
+        include_bytes!("../web/stats.js"),
+    )
+}
+
+async fn logs_js_asset() -> Response {
+    asset_response(
+        "text/javascript; charset=utf-8",
+        include_bytes!("../web/logs.js"),
     )
 }
 
@@ -159,6 +189,130 @@ fn build_event_query(query: EventsQuery) -> anyhow::Result<StoreEventQuery> {
         occurred_before,
         payload_contains: query.payload_contains.filter(|value| !value.is_empty()),
         limit: query.limit.unwrap_or(100).clamp(1, 1_000),
+    })
+}
+
+async fn models(State(state): State<WebState>) -> Response {
+    match state.reactor.model_catalog() {
+        Ok(catalog) => json_response(StatusCode::OK, json!({ "catalog": catalog })),
+        Err(error) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": error.to_string() }),
+        ),
+    }
+}
+
+async fn refresh_models(State(state): State<WebState>) -> Response {
+    match state.reactor.refresh_model_catalog().await {
+        Ok(catalog) => json_response(StatusCode::OK, json!({ "catalog": catalog })),
+        Err(error) => json_response(
+            StatusCode::BAD_GATEWAY,
+            json!({ "error": error.to_string() }),
+        ),
+    }
+}
+
+async fn stats(State(state): State<WebState>) -> Response {
+    match state
+        .store
+        .lock()
+        .map_err(|_| anyhow::anyhow!("event store lock poisoned"))
+        .and_then(|store| store.usage_stats())
+    {
+        Ok(stats) => json_response(
+            StatusCode::OK,
+            json!({ "generated_at": Utc::now(), "usage": stats }),
+        ),
+        Err(error) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": error.to_string() }),
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct LogsQuery {
+    level: Option<String>,
+    category: Option<String>,
+    name: Option<String>,
+    name_prefix: Option<String>,
+    reaction_id: Option<String>,
+    trigger_event_id: Option<String>,
+    correlation_id: Option<String>,
+    batch_id: Option<String>,
+    action_id: Option<String>,
+    tool_call_id: Option<String>,
+    before_sequence: Option<i64>,
+    after_sequence: Option<i64>,
+    from: Option<String>,
+    to: Option<String>,
+    window: Option<String>,
+    payload_contains: Option<String>,
+    limit: Option<usize>,
+}
+
+async fn list_logs(State(state): State<WebState>, Query(query): Query<LogsQuery>) -> Response {
+    match build_log_query(query).and_then(|query| {
+        state
+            .store
+            .lock()
+            .map_err(|_| anyhow::anyhow!("event store lock poisoned"))?
+            .query_logs(&query)
+    }) {
+        Ok(logs) => json_response(StatusCode::OK, json!({ "logs": logs })),
+        Err(error) => json_response(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": error.to_string() }),
+        ),
+    }
+}
+
+fn build_log_query(query: LogsQuery) -> anyhow::Result<StoreLogQuery> {
+    let occurred_after = if let Some(from) = query.from {
+        Some(DateTime::parse_from_rfc3339(&from)?.with_timezone(&Utc))
+    } else {
+        window_start(query.window.as_deref().unwrap_or("all"))?
+    };
+    let occurred_before = query
+        .to
+        .map(|value| DateTime::parse_from_rfc3339(&value).map(|value| value.with_timezone(&Utc)))
+        .transpose()?;
+    let uuid = |value: Option<String>| -> anyhow::Result<Option<Uuid>> {
+        value
+            .filter(|value| !value.is_empty())
+            .map(|value| Uuid::parse_str(&value))
+            .transpose()
+            .map_err(Into::into)
+    };
+    Ok(StoreLogQuery {
+        level: query.level.filter(|value| !value.is_empty()),
+        category: query.category.filter(|value| !value.is_empty()),
+        name: query.name.filter(|value| !value.is_empty()),
+        name_prefix: query.name_prefix.filter(|value| !value.is_empty()),
+        reaction_id: uuid(query.reaction_id)?,
+        trigger_event_id: uuid(query.trigger_event_id)?,
+        correlation_id: uuid(query.correlation_id)?,
+        batch_id: query.batch_id.filter(|value| !value.is_empty()),
+        action_id: query.action_id.filter(|value| !value.is_empty()),
+        tool_call_id: query.tool_call_id.filter(|value| !value.is_empty()),
+        before_sequence: query.before_sequence,
+        after_sequence: query.after_sequence,
+        occurred_after,
+        occurred_before,
+        payload_contains: query.payload_contains.filter(|value| !value.is_empty()),
+        limit: query.limit.unwrap_or(100).clamp(1, 1000),
+    })
+}
+
+fn window_start(window: &str) -> anyhow::Result<Option<DateTime<Utc>>> {
+    Ok(match window {
+        "all" => None,
+        "15m" => Some(Utc::now() - Duration::minutes(15)),
+        "1h" => Some(Utc::now() - Duration::hours(1)),
+        "24h" => Some(Utc::now() - Duration::hours(24)),
+        "7d" => Some(Utc::now() - Duration::days(7)),
+        "30d" => Some(Utc::now() - Duration::days(30)),
+        value => anyhow::bail!("unsupported time window '{value}'"),
     })
 }
 
@@ -343,17 +497,10 @@ async fn process_route_outcome(
     outcome: &mut RouteOutcome,
 ) -> anyhow::Result<()> {
     let Some(draft) = outcome.emit.take() else {
-        if outcome.react {
-            anyhow::bail!("route requested a reaction without emitting an event");
-        }
         return Ok(());
     };
 
-    let _reaction_guard = if outcome.react {
-        Some(state.reaction_lock.lock().await)
-    } else {
-        None
-    };
+    let _reaction_guard = state.reaction_lock.lock().await;
     validate_event_namespace(extension_id, &draft.event_type)?;
     let correlation_id = Uuid::now_v7();
     let trigger = Event::new(
@@ -365,10 +512,6 @@ async fn process_route_outcome(
     );
     append(&state.store, &trigger)?;
     add_response_field(outcome, "event_id", Value::String(trigger.id.to_string()));
-
-    if !outcome.react {
-        return Ok(());
-    }
 
     let reaction_result: anyhow::Result<()> = async {
         let context = tokio::task::block_in_place(|| extension.compile_context(&trigger))?;

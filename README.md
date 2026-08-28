@@ -8,7 +8,7 @@ Habibi's core provides:
 
 - An append-only SQLite event store
 - A native OpenAI ChatGPT/Codex OAuth model transport
-- A multi-turn reaction and action-batch loop
+- A queue-driven event reactor with one model invocation per processed event
 - A local Axum web server
 - Capability-scoped Lua extensions
 - Namespaced web routes and JSON KV storage for extensions
@@ -59,8 +59,8 @@ mise exec -- cargo run
 ```
 
 Then open `http://127.0.0.1:8787`. The home page presents Habibi itself; extension discovery
-and enable/disable controls live at `/extensions`, and the complete durable event stream is
-available at `/events`.
+and enable/disable controls live at `/extensions`. Domain history is at `/events`; detailed
+operational execution is at `/logs`; token, cache, and estimated-cost totals are at `/stats`.
 
 The included chat extension provides its web UI and APIs beneath
 `/extensions/chat/`. It stores sessions and messages as `chat.*` events. UI preferences use
@@ -73,14 +73,24 @@ to 100 events and supports `limit` (up to 1,000), `type`, `prefix`, `source`, `c
 `before_sequence`, `after_sequence`, `from`, `to`, and preset `window` values (`15m`, `1h`,
 `24h`, `7d`, `30d`, or `all`). Sequence cursors allow the UI to traverse all history.
 
-Model invocation start events persist the exact JSON request sent to the model endpoint,
-including `instructions`, converted `input` messages, tool definitions, reasoning settings, and
-model. Completion events persist text, native output items, tool calls, and usage. Action batch,
-proposal, execution, result, and continuation events are visible in the expanded event view.
+Action requests, structured results, batch barriers, tool effects, and semantic links are events.
+Model requests/responses and execution diagnostics are logs rather than reactor inputs.
 
-Built-in tools can get/query events by metadata or payload text, create semantic links between
-events, and traverse those links. The chat extension provides session lookup, keyword message
-search, and user-visible message delivery tools.
+`GET /api/logs` and `/logs` provide searchable operational history by level, category, name,
+reaction, trigger, correlation, batch, action, tool call, time, payload text, and sequence. Model
+logs include exact requests, native output items, parsed tool calls, token usage, cache reads and
+writes when reported by the provider, and per-invocation cost estimates when pricing is configured.
+`GET /api/stats` and `/stats` aggregate these values globally and by model. Pricing comes from
+`model-catalog.json`, selected by provider and model ID. The Stats page can refresh the catalog from
+models.dev through `POST /api/models/refresh`; `GET /api/models` exposes the current catalog. Set
+`HABIBI_MODEL_CATALOG` or `HABIBI_MODEL_CATALOG_URL` to use custom storage or a different source.
+Every completed invocation stores its exact catalog entry and rates, so later refreshes never
+rewrite historical estimates. See [`docs/model-catalog.md`](docs/model-catalog.md) for the format
+and refresh semantics.
+
+Built-in tools can get/query events or logs, create semantic links between events, and traverse
+those links. The chat extension provides session lookup, keyword message search, and user-visible
+message delivery tools.
 
 ## Chat API
 
@@ -108,15 +118,9 @@ mise exec -- cargo clippy --all-targets -- -D warnings
 
 ## Core event types
 
-- `runtime.started`
-- `model.invocation.started`
-- `model.invocation.completed`
-- `model.invocation.failed`
-- `action.batch.created`
-- `action.proposed`
-- `action.started`
-- `action.succeeded`
-- `action.failed`
+- `action.requested`
+- `action.result.succeeded`
+- `action.result.failed`
 - `action.batch.completed`
 - `event.link.created`
 - `event.link.removed`
@@ -124,8 +128,10 @@ mise exec -- cargo clippy --all-targets -- -D warnings
 The chat extension owns:
 
 - `chat.session.created`
+- `chat.session.started`
 - `chat.session.renamed`
 - `chat.session.archived`
 - `chat.message.created`
 
-SQLite's `events.sequence` is the canonical event order. Timestamps are informational.
+SQLite's `events.sequence` is canonical domain-event order. Logs have an independent operational
+sequence. Timestamps are informational.

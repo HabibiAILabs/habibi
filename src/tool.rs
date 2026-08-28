@@ -9,22 +9,14 @@ use uuid::Uuid;
 use crate::{
     event::Event,
     extension::{EventDraft, ExtensionManager},
-    store::{SharedEventStore, StoreEventQuery},
+    store::{SharedEventStore, StoreEventQuery, StoreLogQuery},
 };
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ContinuationPolicy {
-    Required,
-    Terminal,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     pub input_schema: Value,
-    pub continuation: ContinuationPolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,6 +29,7 @@ pub struct ToolCall {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolContext {
     pub trigger: Event,
+    pub current_event: Event,
     pub correlation_id: Uuid,
 }
 
@@ -79,15 +72,8 @@ impl ToolRuntime {
         definitions
     }
 
-    pub fn continuation(&self, name: &str) -> Option<ContinuationPolicy> {
-        self.definitions()
-            .into_iter()
-            .find(|definition| definition.name == name)
-            .map(|definition| definition.continuation)
-    }
-
     pub async fn execute(&self, call: &ToolCall, context: &ToolContext) -> Result<ToolExecution> {
-        if call.name.starts_with("habibi.events.") {
+        if call.name.starts_with("habibi.events.") || call.name.starts_with("habibi.logs.") {
             return self.execute_builtin(call, context);
         }
         let extensions = self.extensions.clone();
@@ -104,6 +90,8 @@ impl ToolRuntime {
             "habibi.events.query" => self.events_query(&call.arguments),
             "habibi.events.link" => self.events_link(&call.arguments, context),
             "habibi.events.related" => self.events_related(&call.arguments),
+            "habibi.logs.get" => self.logs_get(&call.arguments),
+            "habibi.logs.query" => self.logs_query(&call.arguments),
             _ => bail!("unknown built-in tool '{}'", call.name),
         }
     }
@@ -227,6 +215,73 @@ impl ToolRuntime {
         })
     }
 
+    fn logs_get(&self, arguments: &Value) -> Result<ToolExecution> {
+        let log_id = required_string(arguments, "log_id")?;
+        let log = self
+            .store
+            .lock()
+            .map_err(|_| anyhow::anyhow!("event store lock poisoned"))?
+            .get_log(&log_id)?;
+        Ok(ToolExecution {
+            result: json!({ "log": log }),
+            events: vec![],
+        })
+    }
+
+    fn logs_query(&self, arguments: &Value) -> Result<ToolExecution> {
+        let string = |key: &str| {
+            arguments
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        };
+        let uuid = |key: &str| -> Result<Option<Uuid>> {
+            string(key)
+                .map(|value| Uuid::parse_str(&value).map_err(Into::into))
+                .transpose()
+        };
+        let time = |key: &str| -> Result<Option<DateTime<Utc>>> {
+            string(key)
+                .map(|value| {
+                    DateTime::parse_from_rfc3339(&value)
+                        .map(|value| value.with_timezone(&Utc))
+                        .map_err(Into::into)
+                })
+                .transpose()
+        };
+        let query = StoreLogQuery {
+            level: string("level"),
+            category: string("category"),
+            name: string("name"),
+            name_prefix: string("name_prefix"),
+            reaction_id: uuid("reaction_id")?,
+            trigger_event_id: uuid("trigger_event_id")?,
+            correlation_id: uuid("correlation_id")?,
+            batch_id: string("batch_id"),
+            action_id: string("action_id"),
+            tool_call_id: string("tool_call_id"),
+            before_sequence: arguments.get("before_sequence").and_then(Value::as_i64),
+            after_sequence: arguments.get("after_sequence").and_then(Value::as_i64),
+            occurred_after: time("occurred_after")?,
+            occurred_before: time("occurred_before")?,
+            payload_contains: string("payload_contains"),
+            limit: arguments
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(100)
+                .clamp(1, 1000) as usize,
+        };
+        let logs = self
+            .store
+            .lock()
+            .map_err(|_| anyhow::anyhow!("event store lock poisoned"))?
+            .query_logs(&query)?;
+        Ok(ToolExecution {
+            result: json!({ "logs": logs }),
+            events: vec![],
+        })
+    }
+
     fn events_related(&self, arguments: &Value) -> Result<ToolExecution> {
         let event_id = required_string(arguments, "event_id")?;
         let relation = arguments.get("relation").and_then(Value::as_str);
@@ -278,7 +333,6 @@ fn builtin_definitions() -> Vec<ToolDefinition> {
             json!({
                 "type":"object","properties":{"event_id":{"type":"string"},"sequence":{"type":"integer"}}
             }),
-            ContinuationPolicy::Required,
         ),
         definition(
             "habibi.events.query",
@@ -292,7 +346,6 @@ fn builtin_definitions() -> Vec<ToolDefinition> {
                     "limit":{"type":"integer","minimum":1,"maximum":1000}
                 }
             }),
-            ContinuationPolicy::Required,
         ),
         definition(
             "habibi.events.link",
@@ -304,7 +357,6 @@ fn builtin_definitions() -> Vec<ToolDefinition> {
                     "description":{"type":"string"},"bidirectional":{"type":"boolean"}
                 },"required":["to_event_id"]
             }),
-            ContinuationPolicy::Terminal,
         ),
         definition(
             "habibi.events.related",
@@ -312,21 +364,32 @@ fn builtin_definitions() -> Vec<ToolDefinition> {
             json!({
                 "type":"object","properties":{"event_id":{"type":"string"},"relation":{"type":"string"},"limit":{"type":"integer"}},"required":["event_id"]
             }),
-            ContinuationPolicy::Required,
+        ),
+        definition(
+            "habibi.logs.get",
+            "Get one operational log record by ID.",
+            json!({"type":"object","properties":{"log_id":{"type":"string"}},"required":["log_id"]}),
+        ),
+        definition(
+            "habibi.logs.query",
+            "Search detailed operational logs for model, action, extension, HTTP, and runtime execution.",
+            json!({"type":"object","properties":{
+                "level":{"type":"string"},"category":{"type":"string"},"name":{"type":"string"},
+                "name_prefix":{"type":"string"},"reaction_id":{"type":"string"},
+                "trigger_event_id":{"type":"string"},"correlation_id":{"type":"string"},
+                "batch_id":{"type":"string"},"action_id":{"type":"string"},"tool_call_id":{"type":"string"},
+                "before_sequence":{"type":"integer"},"after_sequence":{"type":"integer"},
+                "occurred_after":{"type":"string"},"occurred_before":{"type":"string"},
+                "payload_contains":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":1000}
+            }}),
         ),
     ]
 }
 
-fn definition(
-    name: &str,
-    description: &str,
-    input_schema: Value,
-    continuation: ContinuationPolicy,
-) -> ToolDefinition {
+fn definition(name: &str, description: &str, input_schema: Value) -> ToolDefinition {
     ToolDefinition {
         name: name.into(),
         description: description.into(),
         input_schema,
-        continuation,
     }
 }

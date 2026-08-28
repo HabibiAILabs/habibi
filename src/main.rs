@@ -1,4 +1,5 @@
 mod auth;
+mod catalog;
 mod event;
 mod extension;
 mod model;
@@ -11,6 +12,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result, bail};
 use auth::CredentialStore;
+use catalog::CatalogManager;
 use extension::ExtensionManager;
 use model::{ModelClient, ModelConfig};
 use reactor::Reactor;
@@ -57,7 +59,8 @@ async fn main() -> Result<()> {
         bail!("HABIBI_CONTEXT_MESSAGES must be greater than zero");
     }
 
-    let model = ModelClient::new(ModelConfig::from_env()?)?;
+    let catalog = CatalogManager::from_env()?;
+    let model = ModelClient::new(ModelConfig::from_env()?, catalog)?;
     let store = EventStore::open(&database_path)?.shared();
     let extensions = Arc::new(ExtensionManager::load(&extensions_path, store.clone())?);
     let tools = Arc::new(ToolRuntime::new(store.clone(), extensions.clone())?);
