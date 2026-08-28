@@ -1,4 +1,20 @@
-# Habibi
+<p align="center">
+  <img src="web/habibi-logo.svg" alt="Habibi" width="170">
+</p>
+
+<h1 align="center">Habibi</h1>
+
+<p align="center">
+  A local, event-sourced AI runtime with durable actions, searchable execution logs, and installable extensions.
+</p>
+
+<p align="center">
+  <a href="https://github.com/HabibiAssistant/extensions">Official extensions</a>
+  ·
+  <a href="docs/extensions.md">Extension authoring</a>
+  ·
+  <a href="LICENSE">MIT license</a>
+</p>
 
 Habibi is a local, event-sourced AI runtime built around one continuous conversation.
 There are no core sessions: every incoming event joins one durable history, and each model
@@ -49,6 +65,9 @@ cp .env.example .env
 | `HABIBI_OPENAI_CODEX_URL` | no | ChatGPT Codex Responses endpoint |
 | `HABIBI_DB` | no | `habibi.db` |
 | `HABIBI_BIND` | no | `127.0.0.1:8787` |
+| `HABIBI_EXTENSION_BIND` | no | `127.0.0.1:8788` |
+| `HABIBI_CORE_ORIGIN` | no | derived from `HABIBI_BIND` |
+| `HABIBI_EXTENSION_ORIGIN` | no | derived from `HABIBI_EXTENSION_BIND` |
 | `HABIBI_EXTENSIONS_DIR` | no | `extensions` |
 | `HABIBI_CONTEXT_MESSAGES` | no | `40` |
 
@@ -62,9 +81,29 @@ Then open `http://127.0.0.1:8787`. The home page presents Habibi itself; extensi
 and enable/disable controls live at `/extensions`. Domain history is at `/events`; detailed
 operational execution is at `/logs`; token, cache, and estimated-cost totals are at `/stats`.
 
-The included chat extension provides its web UI and APIs beneath
-`/extensions/chat/`. It stores sessions and messages as `chat.*` events. UI preferences use
-the extension's private KV namespace.
+Extensions are installed separately from the core runtime. Install the official chat extension
+from GitHub, then start Habibi:
+
+```sh
+mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir chat
+mise exec -- cargo run
+```
+
+You can also install a local checkout:
+
+```sh
+mise exec -- cargo run -- install ../habibi-extensions --subdir chat
+```
+
+Installed extensions retain source, revision, semantic version, content hash, capabilities, and
+installation time. Use `habibi update <id>` or the Extensions UI to check and apply updates, and
+`habibi rollback <id>` to restore the previous installed generation. An extension must increase
+its manifest version when its content changes.
+
+Extension web applications are served from `http://127.0.0.1:8788`, separately from the core
+management UI. This prevents extension JavaScript from directly invoking privileged management
+endpoints. Chat stores sessions and messages as `chat.*` events and keeps UI preferences in its
+private KV namespace.
 
 ## Events API
 
@@ -93,6 +132,10 @@ those links. The chat extension provides session lookup, keyword message search,
 message delivery tools.
 
 ## Chat API
+
+The official chat extension is maintained at
+[`HabibiAssistant/extensions`](https://github.com/HabibiAssistant/extensions/tree/main/chat).
+Its default web/API origin is `http://127.0.0.1:8788`.
 
 ```text
 GET    /extensions/chat/api/sessions

@@ -1,9 +1,9 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::{Component, Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, RwLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
@@ -18,6 +18,7 @@ use serde_json::Value;
 
 use crate::{
     event::{ConversationMessage, Event},
+    installer::{ExtensionInstaller, InstallMetadata},
     store::{SharedEventStore, StoreEventQuery},
     tool::{ToolCall, ToolContext, ToolDefinition, ToolExecution},
 };
@@ -121,14 +122,14 @@ struct LuaState {
 
 pub struct LoadedExtension {
     pub manifest: ExtensionManifest,
-    base_dir: PathBuf,
+    static_files: HashMap<String, (Vec<u8>, String)>,
     store: SharedEventStore,
     enabled: AtomicBool,
     state: Mutex<LuaState>,
 }
 
 impl LoadedExtension {
-    fn load(directory: &Path, store: SharedEventStore) -> Result<Self> {
+    pub(crate) fn load(directory: &Path, store: SharedEventStore) -> Result<Self> {
         let manifest_path = directory.join("extension.toml");
         let manifest: ExtensionManifest = toml::from_str(
             &fs::read_to_string(&manifest_path)
@@ -263,23 +264,45 @@ impl LoadedExtension {
             .exec()
             .with_context(|| format!("failed to initialize extension '{}'", manifest.id))?;
 
-        let routes = registered_routes
+        let routes: Vec<RegisteredRoute> = registered_routes
             .lock()
             .map_err(|_| anyhow::anyhow!("extension route registry lock poisoned"))?
             .drain(..)
             .collect();
-        let tools = registered_tools
+        let tools: Vec<RegisteredTool> = registered_tools
             .lock()
             .map_err(|_| anyhow::anyhow!("extension tool registry lock poisoned"))?
             .drain(..)
             .collect();
+        let mut tool_names = HashSet::new();
+        for tool in &tools {
+            if !tool_names.insert(tool.definition.name.clone()) {
+                bail!(
+                    "extension '{}' registers duplicate tool '{}'",
+                    manifest.id,
+                    tool.definition.name
+                );
+            }
+        }
+        let mut route_names = HashSet::new();
+        for route in &routes {
+            if !route_names.insert((route.method.clone(), route.path.clone())) {
+                bail!(
+                    "extension '{}' registers duplicate route {} {}",
+                    manifest.id,
+                    route.method,
+                    route.path
+                );
+            }
+        }
         let context_handler = context_handler
             .lock()
             .map_err(|_| anyhow::anyhow!("context registry lock poisoned"))?
             .take();
+        let static_files = load_static_files(directory, &manifest)?;
         Ok(Self {
             manifest,
-            base_dir: directory.to_owned(),
+            static_files,
             store,
             enabled: AtomicBool::new(enabled),
             state: Mutex::new(LuaState {
@@ -400,23 +423,6 @@ impl LoadedExtension {
         if !self.is_enabled() {
             return Ok(None);
         }
-        let Some(web) = &self.manifest.web else {
-            return Ok(None);
-        };
-        let Some(static_dir) = &web.static_dir else {
-            return Ok(None);
-        };
-        let static_dir = Path::new(static_dir);
-        if static_dir.is_absolute()
-            || static_dir.components().any(|component| {
-                matches!(
-                    component,
-                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
-                )
-            })
-        {
-            bail!("extension '{}' has an unsafe static_dir", self.manifest.id);
-        }
         let relative = if path == "/" || path.is_empty() {
             "index.html"
         } else {
@@ -425,31 +431,14 @@ impl LoadedExtension {
         if relative.split('/').any(|part| part == "..") {
             return Ok(None);
         }
-        let base = self.base_dir.canonicalize()?;
-        let root = self.base_dir.join(static_dir).canonicalize()?;
-        if !root.starts_with(&base) {
-            bail!(
-                "extension '{}' static_dir escapes its directory",
-                self.manifest.id
-            );
-        }
-        let file = self.base_dir.join(static_dir).join(relative);
-        let Ok(file) = file.canonicalize() else {
-            return Ok(None);
-        };
-        if !file.starts_with(root) || !file.is_file() {
-            return Ok(None);
-        }
-        let content_type = mime_guess::from_path(&file)
-            .first_or_octet_stream()
-            .essence_str()
-            .to_owned();
-        Ok(Some((fs::read(file)?, content_type)))
+        Ok(self.static_files.get(relative).cloned())
     }
 }
 
 pub struct ExtensionManager {
-    extensions: HashMap<String, Arc<LoadedExtension>>,
+    directory: PathBuf,
+    store: SharedEventStore,
+    extensions: RwLock<HashMap<String, Arc<LoadedExtension>>>,
 }
 
 impl ExtensionManager {
@@ -460,7 +449,13 @@ impl ExtensionManager {
         }
         for entry in fs::read_dir(directory)? {
             let path = entry?.path();
-            if !path.is_dir() || !path.join("extension.toml").exists() {
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with('.'))
+                || !path.is_dir()
+                || !path.join("extension.toml").exists()
+            {
                 continue;
             }
             let extension = Arc::new(LoadedExtension::load(&path, store.clone())?);
@@ -471,22 +466,48 @@ impl ExtensionManager {
                 bail!("duplicate extension id");
             }
         }
-        Ok(Self { extensions })
+        Ok(Self {
+            directory: directory.to_owned(),
+            store,
+            extensions: RwLock::new(extensions),
+        })
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<LoadedExtension>> {
-        self.extensions.get(id).cloned()
+        self.extensions.read().ok()?.get(id).cloned()
+    }
+
+    pub fn reload(&self, id: &str) -> Result<Arc<LoadedExtension>> {
+        let candidate = Arc::new(LoadedExtension::load(
+            &self.directory.join(id),
+            self.store.clone(),
+        )?);
+        if candidate.manifest.id != id {
+            bail!("installed extension manifest id does not match directory '{id}'");
+        }
+        self.extensions
+            .write()
+            .map_err(|_| anyhow::anyhow!("extension registry lock poisoned"))?
+            .insert(id.to_owned(), candidate.clone());
+        Ok(candidate)
+    }
+
+    fn snapshot(&self) -> Vec<Arc<LoadedExtension>> {
+        self.extensions
+            .read()
+            .map(|extensions| extensions.values().cloned().collect())
+            .unwrap_or_default()
     }
 
     pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
-        self.extensions
-            .values()
+        self.snapshot()
+            .iter()
             .flat_map(|extension| extension.tool_definitions())
             .collect()
     }
 
     pub fn execute_tool(&self, call: &ToolCall, context: &ToolContext) -> Result<ToolExecution> {
-        for extension in self.extensions.values() {
+        for extension in self.snapshot() {
             if let Some(result) = extension.execute_tool(call, context)? {
                 return Ok(result);
             }
@@ -495,17 +516,17 @@ impl ExtensionManager {
     }
 
     pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<bool> {
-        let Some(extension) = self.extensions.get(id) else {
+        let Some(extension) = self.get(id) else {
             return Ok(false);
         };
         extension.set_enabled(enabled)?;
         Ok(true)
     }
 
-    pub fn summaries(&self) -> Vec<ExtensionSummary> {
+    pub fn summaries(&self, extension_origin: &str) -> Vec<ExtensionSummary> {
         let mut summaries = self
-            .extensions
-            .values()
+            .snapshot()
+            .iter()
             .map(|extension| {
                 let (route_count, tool_count, reactions) = extension
                     .state
@@ -543,6 +564,9 @@ impl ExtensionManager {
                 if reactions {
                     provides.push("Model reactions".to_owned());
                 }
+                let installation = ExtensionInstaller::new(self.directory.clone())
+                    .metadata(&extension.manifest.id)
+                    .ok();
                 ExtensionSummary {
                     id: extension.manifest.id.clone(),
                     name: extension.manifest.name.clone(),
@@ -551,12 +575,19 @@ impl ExtensionManager {
                     enabled: extension.is_enabled(),
                     capabilities: extension.manifest.capabilities.clone(),
                     provides,
+                    installation,
                     main_page: extension
                         .manifest
                         .web
                         .as_ref()
                         .and_then(|web| web.static_dir.as_ref())
-                        .map(|_| format!("/extensions/{}/", extension.manifest.id)),
+                        .map(|_| {
+                            format!(
+                                "{}/extensions/{}/",
+                                extension_origin.trim_end_matches('/'),
+                                extension.manifest.id
+                            )
+                        }),
                 }
             })
             .collect::<Vec<_>>();
@@ -574,6 +605,7 @@ pub struct ExtensionSummary {
     pub enabled: bool,
     pub capabilities: ExtensionCapabilities,
     pub provides: Vec<String>,
+    pub installation: Option<InstallMetadata>,
     pub main_page: Option<String>,
 }
 
@@ -667,6 +699,74 @@ fn create_events_api(lua: &Lua, store: SharedEventStore) -> mlua::Result<mlua::T
     Ok(events)
 }
 
+fn load_static_files(
+    directory: &Path,
+    manifest: &ExtensionManifest,
+) -> Result<HashMap<String, (Vec<u8>, String)>> {
+    let Some(static_dir) = manifest
+        .web
+        .as_ref()
+        .and_then(|web| web.static_dir.as_deref())
+    else {
+        return Ok(HashMap::new());
+    };
+    let relative = Path::new(static_dir);
+    if relative.is_absolute()
+        || relative.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        bail!("extension '{}' has an unsafe static_dir", manifest.id);
+    }
+    let base = directory.canonicalize()?;
+    let root = directory.join(relative).canonicalize()?;
+    if !root.starts_with(&base) || !root.is_dir() {
+        bail!("extension '{}' static_dir is invalid", manifest.id);
+    }
+    let mut files = HashMap::new();
+    collect_static_files(&root, &root, &mut files, 0)?;
+    Ok(files)
+}
+
+fn collect_static_files(
+    root: &Path,
+    directory: &Path,
+    files: &mut HashMap<String, (Vec<u8>, String)>,
+    total_size: usize,
+) -> Result<usize> {
+    let mut size = total_size;
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            bail!("extension static directories cannot contain symbolic links");
+        }
+        if file_type.is_dir() {
+            size = collect_static_files(root, &entry.path(), files, size)?;
+        } else if file_type.is_file() {
+            let contents = fs::read(entry.path())?;
+            size = size.saturating_add(contents.len());
+            if size > 32 * 1024 * 1024 {
+                bail!("extension static files exceed the 32 MiB limit");
+            }
+            let relative = entry
+                .path()
+                .strip_prefix(root)?
+                .to_string_lossy()
+                .replace('\\', "/");
+            let content_type = mime_guess::from_path(entry.path())
+                .first_or_octet_stream()
+                .essence_str()
+                .to_owned();
+            files.insert(relative, (contents, content_type));
+        }
+    }
+    Ok(size)
+}
+
 fn validate_manifest(manifest: &ExtensionManifest) -> Result<()> {
     if manifest.api_version != 1 {
         bail!(
@@ -674,6 +774,9 @@ fn validate_manifest(manifest: &ExtensionManifest) -> Result<()> {
             manifest.id,
             manifest.api_version
         );
+    }
+    if manifest.id == "habibi" {
+        bail!("extension id 'habibi' is reserved by the runtime");
     }
     if manifest.id.is_empty()
         || !manifest.id.chars().all(|character| {

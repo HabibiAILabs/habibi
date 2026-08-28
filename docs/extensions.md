@@ -1,8 +1,21 @@
 # Habibi extensions
 
-Extensions are Lua programs loaded from subdirectories of `HABIBI_EXTENSIONS_DIR`. Each
-extension has its own HTTP namespace and KV namespace. The first API version is deliberately
-small and synchronous.
+Extensions are versioned Lua packages installed beneath `HABIBI_EXTENSIONS_DIR`. Each extension
+has its own HTTP namespace and KV namespace. The first API version is deliberately small and
+synchronous.
+
+Install from a local package or Git repository:
+
+```sh
+habibi install ./my-extension
+habibi install https://github.com/HabibiAssistant/extensions.git --subdir chat
+habibi install https://github.com/example/plugin.git --ref v1.2.0
+habibi update chat
+```
+
+Habibi copies packages rather than executing them in place, rejects symbolic links and unsafe
+subdirectories, validates them in an isolated Lua runtime, and records source/revision/version and
+a content hash in `.habibi-install.json`. Content changes require a semantic version increase.
 
 ## Layout
 
@@ -38,7 +51,9 @@ host APIs. Lua runs without the `io`, `os`, `package`, or `debug` standard libra
 
 Habibi also infers provided features from registered routes, static web content, and reaction
 handlers. These details appear at `/extensions`, where extensions can be enabled or disabled.
-An extension with static web content receives an **Open** link to `/extensions/{id}/`.
+An extension with static web content receives an **Open** link to its `/extensions/{id}/` page on
+the isolated extension-web origin (`HABIBI_EXTENSION_BIND`, port 8788 by default). Core management
+remains on port 8787 so extension JavaScript cannot directly invoke privileged update endpoints.
 
 ## Web routes
 

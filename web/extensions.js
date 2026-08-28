@@ -1,4 +1,5 @@
 const list = document.querySelector("#extension-list");
+const adminHeaders = { "x-habibi-admin-request": "core-ui" };
 
 async function loadExtensions() {
   const response = await fetch("/api/extensions");
@@ -32,6 +33,15 @@ function extensionCard(extension) {
     provides.append(item);
   }
   details.append(title, description, provides);
+  if (extension.installation) {
+    const source = document.createElement("p");
+    source.className = "installation-source";
+    const installation = extension.installation;
+    source.textContent = installation.source.kind === "git"
+      ? `Installed from ${installation.source.url} @ ${installation.source.revision.slice(0, 8)}`
+      : `Installed from ${installation.source.path}`;
+    details.append(source);
+  }
 
   const actions = document.createElement("div");
   actions.className = "extension-actions";
@@ -42,6 +52,44 @@ function extensionCard(extension) {
     open.textContent = "Open";
     open.hidden = !extension.enabled;
     actions.append(open);
+  }
+  if (extension.installation) {
+    const update = document.createElement("button");
+    update.className = "open-link update-button";
+    update.textContent = "Check update";
+    update.onclick = async () => {
+      update.disabled = true;
+      try {
+        const response = await fetch(`/api/extensions/${encodeURIComponent(extension.id)}/check-update`, { method: "POST", headers: adminHeaders });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || `Update check failed (${response.status})`);
+        if (!result.update_available) {
+          update.textContent = "Up to date";
+          return;
+        }
+        update.textContent = `Update to ${result.available_version}`;
+        update.disabled = false;
+        update.onclick = async () => {
+          const enabledCapabilities = Object.entries(result.available_capabilities)
+            .filter(([, enabled]) => enabled)
+            .map(([name]) => name)
+            .join(", ") || "none";
+          if (!window.confirm(`Update ${extension.name} from ${result.installed_version} to ${result.available_version}?\n\nCapabilities: ${enabledCapabilities}\nRevision: ${(result.available_revision || "local source").slice(0, 12)}`)) return;
+          update.disabled = true;
+          update.textContent = "Updating…";
+          const apply = await fetch(`/api/extensions/${encodeURIComponent(extension.id)}/update`, { method: "POST", headers: adminHeaders });
+          const body = await apply.json();
+          if (!apply.ok) throw new Error(body.error || `Update failed (${apply.status})`);
+          await loadExtensions();
+        };
+      } catch (error) {
+        update.textContent = error.message;
+        update.title = error.message;
+      } finally {
+        if (update.textContent === "Check update") update.disabled = false;
+      }
+    };
+    actions.append(update);
   }
   const toggle = document.createElement("button");
   toggle.className = `toggle${extension.enabled ? " on" : ""}`;

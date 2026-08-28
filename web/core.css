@@ -43,7 +43,9 @@ button { font: inherit; }
 .description { margin: 9px 0 18px; color: var(--muted); }
 .provides { display: flex; flex-wrap: wrap; gap: 7px; margin: 0; padding: 0; list-style: none; }
 .provides li { border: 1px solid var(--line); border-radius: 999px; padding: 5px 9px; color: #c5d0c7; font-size: 12px; }
-.extension-actions { display: flex; align-items: center; gap: 10px; }
+.extension-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; }
+.installation-source { margin: 14px 0 0; color: var(--muted); font: 11px ui-monospace, monospace; overflow-wrap: anywhere; }
+.update-button { cursor: pointer; color: var(--text); }
 .open-link { border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; background: var(--raised); }
 .toggle { position: relative; width: 46px; height: 26px; border: 0; border-radius: 999px; background: #39423b; }
 .toggle::after { position: absolute; top: 4px; left: 4px; width: 18px; height: 18px; border-radius: 50%; background: white; content: ""; transition: transform .16s; }

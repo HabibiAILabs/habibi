@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use anyhow::Context;
 use axum::{
@@ -6,7 +6,7 @@ use axum::{
     body::{Body, Bytes},
     extract::{Path, Query, State},
     http::{HeaderMap, Method, StatusCode, Uri, header},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Redirect, Response},
     routing::{any, get, post, put},
 };
 use chrono::{DateTime, Duration, Utc};
@@ -17,6 +17,7 @@ use uuid::Uuid;
 use crate::{
     event::Event,
     extension::{ExtensionManager, RequestData, RouteOutcome},
+    installer::ExtensionInstaller,
     reactor::Reactor,
     store::{SharedEventStore, StoreEventQuery, StoreLogQuery},
 };
@@ -26,6 +27,9 @@ pub struct WebState {
     pub extensions: Arc<ExtensionManager>,
     pub reactor: Arc<Reactor>,
     pub store: SharedEventStore,
+    pub extensions_dir: PathBuf,
+    pub core_origin: String,
+    pub extension_origin: String,
     pub reaction_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -49,10 +53,40 @@ pub fn router(state: WebState) -> Router {
         .route("/api/models/refresh", post(refresh_models))
         .route("/api/extensions", get(list_extensions))
         .route("/api/extensions/{extension_id}", put(toggle_extension))
+        .route(
+            "/api/extensions/{extension_id}/check-update",
+            post(check_extension_update),
+        )
+        .route(
+            "/api/extensions/{extension_id}/update",
+            post(update_extension),
+        )
+        .route(
+            "/api/extensions/{extension_id}/reload",
+            post(reload_extension),
+        )
+        .with_state(state)
+}
+
+pub fn extension_router(state: WebState) -> Router {
+    Router::new()
+        .route("/", get(extension_home_redirect))
+        .route("/events", get(extension_core_redirect))
+        .route("/logs", get(extension_core_redirect))
+        .route("/stats", get(extension_core_redirect))
+        .route("/assets/habibi-logo.svg", get(logo_asset))
         .route("/extensions/{extension_id}", any(extension_root))
         .route("/extensions/{extension_id}/", any(extension_root))
         .route("/extensions/{extension_id}/{*path}", any(extension_path))
         .with_state(state)
+}
+
+async fn extension_home_redirect(State(state): State<WebState>) -> Redirect {
+    Redirect::temporary(&state.core_origin)
+}
+
+async fn extension_core_redirect(State(state): State<WebState>, uri: Uri) -> Redirect {
+    Redirect::temporary(&format!("{}{}", state.core_origin, uri.path()))
 }
 
 async fn home_page() -> Response {
@@ -317,7 +351,7 @@ fn window_start(window: &str) -> anyhow::Result<Option<DateTime<Utc>>> {
 }
 
 async fn list_extensions(State(state): State<WebState>) -> impl IntoResponse {
-    axum::Json(state.extensions.summaries())
+    axum::Json(state.extensions.summaries(&state.extension_origin))
 }
 
 #[derive(Deserialize)]
@@ -344,6 +378,131 @@ async fn toggle_extension(
             json!({ "error": error.to_string() }),
         ),
     }
+}
+
+async fn check_extension_update(
+    State(state): State<WebState>,
+    Path(extension_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !is_core_admin_request(&headers) {
+        return json_response(
+            StatusCode::FORBIDDEN,
+            json!({ "error": "core UI request required" }),
+        );
+    }
+    let extensions_dir = state.extensions_dir.clone();
+    match tokio::task::spawn_blocking(move || {
+        ExtensionInstaller::new(extensions_dir).check_update(&extension_id)
+    })
+    .await
+    {
+        Ok(Ok(status)) => json_response(StatusCode::OK, json!(status)),
+        Ok(Err(error)) => json_response(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": error.to_string() }),
+        ),
+        Err(error) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": error.to_string() }),
+        ),
+    }
+}
+
+async fn update_extension(
+    State(state): State<WebState>,
+    Path(extension_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !is_core_admin_request(&headers) {
+        return json_response(
+            StatusCode::FORBIDDEN,
+            json!({ "error": "core UI request required" }),
+        );
+    }
+    let _reaction_guard = state.reaction_lock.lock().await;
+    let extensions_dir = state.extensions_dir.clone();
+    let rollback_dir = extensions_dir.clone();
+    let update_id = extension_id.clone();
+    let installed = match tokio::task::spawn_blocking(move || {
+        ExtensionInstaller::new(extensions_dir).update(&update_id)
+    })
+    .await
+    {
+        Ok(Ok(installed)) => installed,
+        Ok(Err(error)) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": error.to_string() }),
+            );
+        }
+        Err(error) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": error.to_string() }),
+            );
+        }
+    };
+    match state.extensions.reload(&extension_id) {
+        Ok(_) => json_response(StatusCode::OK, json!({ "installed": installed })),
+        Err(error) => {
+            let rollback_id = extension_id.clone();
+            let rollback = tokio::task::spawn_blocking(move || {
+                ExtensionInstaller::new(rollback_dir).rollback(&rollback_id)
+            })
+            .await;
+            let restored =
+                matches!(rollback, Ok(Ok(_))) && state.extensions.reload(&extension_id).is_ok();
+            json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({
+                    "error": format!("extension update could not be loaded: {error}"),
+                    "rolled_back": restored
+                }),
+            )
+        }
+    }
+}
+
+async fn reload_extension(
+    State(state): State<WebState>,
+    Path(extension_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !is_core_admin_request(&headers) {
+        return json_response(
+            StatusCode::FORBIDDEN,
+            json!({ "error": "core UI request required" }),
+        );
+    }
+    let _reaction_guard = state.reaction_lock.lock().await;
+    match state.extensions.reload(&extension_id) {
+        Ok(extension) => json_response(
+            StatusCode::OK,
+            json!({ "id": extension.manifest.id, "version": extension.manifest.version }),
+        ),
+        Err(error) => {
+            let rollback_dir = state.extensions_dir.clone();
+            let rollback_id = extension_id.clone();
+            let rollback = tokio::task::spawn_blocking(move || {
+                ExtensionInstaller::new(rollback_dir).rollback(&rollback_id)
+            })
+            .await;
+            let restored =
+                matches!(rollback, Ok(Ok(_))) && state.extensions.reload(&extension_id).is_ok();
+            json_response(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": error.to_string(), "rolled_back": restored }),
+            )
+        }
+    }
+}
+
+fn is_core_admin_request(headers: &HeaderMap) -> bool {
+    headers
+        .get("x-habibi-admin-request")
+        .and_then(|value| value.to_str().ok())
+        == Some("core-ui")
 }
 
 async fn extension_root(
