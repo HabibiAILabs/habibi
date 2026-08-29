@@ -6,7 +6,7 @@ use std::{
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::event::{Event, LogEntry, StoredEvent, StoredLog};
@@ -105,6 +105,23 @@ pub struct UsageStats {
     pub tools: Vec<ToolUsageStats>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+struct FilesystemRootGrant {
+    path: String,
+    identity: Option<String>,
+}
+
+#[cfg(unix)]
+fn filesystem_identity(metadata: &std::fs::Metadata) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    Some(format!("{}:{}", metadata.dev(), metadata.ino()))
+}
+
+#[cfg(not(unix))]
+fn filesystem_identity(_metadata: &std::fs::Metadata) -> Option<String> {
+    None
+}
+
 pub struct EventStore {
     connection: Connection,
 }
@@ -163,6 +180,12 @@ impl EventStore {
                  extension_id TEXT PRIMARY KEY,
                  enabled      INTEGER NOT NULL,
                  updated_at   TEXT NOT NULL
+             );
+
+             CREATE TABLE IF NOT EXISTS extension_grants (
+                 extension_id     TEXT PRIMARY KEY,
+                 filesystem_roots TEXT NOT NULL,
+                 updated_at       TEXT NOT NULL
              );
 
              CREATE TABLE IF NOT EXISTS event_links (
@@ -794,6 +817,70 @@ impl EventStore {
                  enabled = excluded.enabled,
                  updated_at = excluded.updated_at",
             params![extension_id, enabled, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub fn extension_filesystem_roots(&self, extension_id: &str) -> Result<Vec<String>> {
+        let roots = self
+            .connection
+            .query_row(
+                "SELECT filesystem_roots FROM extension_grants WHERE extension_id = ?1",
+                [extension_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let grants = roots
+            .map(|roots| serde_json::from_str::<Vec<FilesystemRootGrant>>(&roots))
+            .transpose()?
+            .unwrap_or_default();
+        grants
+            .into_iter()
+            .map(|grant| {
+                let metadata = std::fs::metadata(&grant.path).with_context(|| {
+                    format!("granted filesystem root '{}' no longer exists", grant.path)
+                })?;
+                if !metadata.is_dir() || grant.identity != filesystem_identity(&metadata) {
+                    anyhow::bail!(
+                        "granted filesystem root '{}' changed identity; grant it again",
+                        grant.path
+                    );
+                }
+                Ok(grant.path)
+            })
+            .collect()
+    }
+
+    pub fn set_extension_filesystem_roots(
+        &self,
+        extension_id: &str,
+        roots: &[String],
+    ) -> Result<()> {
+        let grants = roots
+            .iter()
+            .map(|path| {
+                let metadata = std::fs::metadata(path)
+                    .with_context(|| format!("filesystem root '{path}' does not exist"))?;
+                if !metadata.is_dir() {
+                    anyhow::bail!("filesystem root '{path}' is not a directory");
+                }
+                Ok(FilesystemRootGrant {
+                    path: path.clone(),
+                    identity: filesystem_identity(&metadata),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.connection.execute(
+            "INSERT INTO extension_grants (extension_id, filesystem_roots, updated_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(extension_id) DO UPDATE SET
+                 filesystem_roots = excluded.filesystem_roots,
+                 updated_at = excluded.updated_at",
+            params![
+                extension_id,
+                serde_json::to_string(&grants)?,
+                Utc::now().to_rfc3339()
+            ],
         )?;
         Ok(())
     }

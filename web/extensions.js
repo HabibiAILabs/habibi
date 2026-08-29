@@ -51,6 +51,9 @@ function extensionCard(extension) {
       details.append(security);
     }
   }
+  if (extension.capabilities.filesystem) {
+    details.append(filesystemGrants(extension));
+  }
 
   const actions = document.createElement("div");
   actions.className = "extension-actions";
@@ -122,6 +125,50 @@ function extensionCard(extension) {
   actions.append(toggle);
   card.append(details, actions);
   return card;
+}
+
+function filesystemGrants(extension) {
+  const section = document.createElement("section");
+  section.className = "grant-editor";
+  const label = document.createElement("label");
+  label.htmlFor = `filesystem-roots-${extension.id}`;
+  label.textContent = "Granted filesystem roots";
+  const help = document.createElement("small");
+  help.textContent = "One existing absolute directory per line. The extension cannot access paths outside these roots or follow symbolic links.";
+  const roots = document.createElement("textarea");
+  roots.id = `filesystem-roots-${extension.id}`;
+  roots.rows = 3;
+  roots.spellcheck = false;
+  roots.placeholder = "/home/you/code";
+  roots.value = extension.filesystem_roots.join("\n");
+  const status = document.createElement("small");
+  status.className = "grant-status";
+  const save = document.createElement("button");
+  save.className = "secondary";
+  save.type = "button";
+  save.textContent = "Save filesystem grants";
+  save.onclick = async () => {
+    save.disabled = true;
+    status.textContent = "Saving…";
+    try {
+      const filesystemRoots = roots.value.split("\n").map((root) => root.trim()).filter(Boolean);
+      const response = await fetch(`/api/extensions/${encodeURIComponent(extension.id)}/grants`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ filesystem_roots: filesystemRoots }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `Grant update failed (${response.status})`);
+      roots.value = result.filesystem_roots.join("\n");
+      status.textContent = `Saved ${result.filesystem_roots.length} root${result.filesystem_roots.length === 1 ? "" : "s"}.`;
+    } catch (error) {
+      status.textContent = error.message;
+    } finally {
+      save.disabled = false;
+    }
+  };
+  section.append(label, help, roots, save, status);
+  return section;
 }
 
 loadExtensions().catch((error) => {

@@ -23,6 +23,14 @@ Blocking findings abort installation. Warnings are recorded in `.habibi-install.
 
 Static scanning cannot prove that an extension is safe or private. It may miss obfuscated behavior, dynamically constructed endpoints, logic flaws, or data disclosure through allowed APIs.
 
+## Filesystem grants
+
+The filesystem capability defaults to no access. Users grant existing canonical directories per
+extension. Host operations are capability-confined, reject symbolic links and special files, bound
+all reads/searches, serialize mutations, require hashes for existing-file changes, and use atomic
+replacement. Grants reduce accidental scope; they do not make a fully trusted extension hostile-code
+safe. File contents and patch arguments remain present in durable action events and exact model logs.
+
 ## Reporting vulnerabilities
 
 Please use GitHub private vulnerability reporting for the affected repository when available. Do not include access tokens, OAuth credentials, private event data, or database contents in a public issue.

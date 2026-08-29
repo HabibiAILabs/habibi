@@ -21,6 +21,9 @@ use sha2::{Digest, Sha256};
 use crate::{
     context::ContextContribution,
     event::Event,
+    filesystem::{
+        FilesystemHost, MoveRequest, PatchRequest, PathRequest, SearchRequest, WriteRequest,
+    },
     installer::{ExtensionInstaller, InstallMetadata},
     store::{SharedEventStore, StoreEventQuery},
     tool::{ToolCall, ToolContext, ToolDefinition, ToolExecution, provider_tool_name},
@@ -51,6 +54,8 @@ pub struct ExtensionCapabilities {
     pub tools: bool,
     #[serde(default)]
     pub context: bool,
+    #[serde(default)]
+    pub filesystem: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -153,6 +158,7 @@ struct LuaState {
     tools: Vec<RegisteredTool>,
     context_hooks: Vec<RegisteredHook>,
     tool_suggestion_hooks: Vec<RegisteredHook>,
+    filesystem_host: Option<FilesystemHost>,
 }
 
 pub struct LoadedExtension {
@@ -205,6 +211,10 @@ impl LoadedExtension {
         let registered_tools = Arc::new(Mutex::new(Vec::new()));
         let context_hooks = Arc::new(Mutex::new(Vec::new()));
         let tool_suggestion_hooks = Arc::new(Mutex::new(Vec::new()));
+        let filesystem_host = manifest
+            .capabilities
+            .filesystem
+            .then(|| FilesystemHost::new(&manifest.id, store.clone()));
         let habibi = lua.create_table()?;
         habibi.set(
             "id",
@@ -223,6 +233,9 @@ impl LoadedExtension {
         }
         if manifest.capabilities.events {
             habibi.set("events", create_events_api(&lua, store.clone())?)?;
+        }
+        if let Some(host) = &filesystem_host {
+            habibi.set("files", create_files_api(&lua, host.clone())?)?;
         }
         if manifest.capabilities.tools {
             let tools = lua.create_table()?;
@@ -383,6 +396,7 @@ impl LoadedExtension {
                 tools,
                 context_hooks,
                 tool_suggestion_hooks,
+                filesystem_host,
             }),
         })
     }
@@ -569,11 +583,41 @@ impl LoadedExtension {
                 )
             })?;
         state.instruction_budget.store(100, Ordering::Relaxed);
-        let handler: Function = state.lua.registry_value(&tool.handler)?;
-        let arguments = state.lua.to_value(&call.arguments)?;
-        let context = state.lua.to_value(context)?;
-        let result: LuaValue = handler.call((arguments, context))?;
-        Ok(state.lua.from_value(result)?)
+        if let Some(host) = &state.filesystem_host {
+            host.clear_effects()?;
+        }
+        let attempted: Result<ToolExecution> = (|| {
+            let handler: Function = state.lua.registry_value(&tool.handler)?;
+            let arguments = state.lua.to_value(&call.arguments)?;
+            let context = state.lua.to_value(context)?;
+            let result: LuaValue = handler.call((arguments, context))?;
+            Ok(state.lua.from_value(result)?)
+        })();
+        let host_events = state
+            .filesystem_host
+            .as_ref()
+            .map(|host| host.take_effects())
+            .transpose()?
+            .unwrap_or_default()
+            .into_iter()
+            .map(|effect| EventDraft {
+                event_type: effect.event_type,
+                payload: effect.payload,
+            })
+            .collect::<Vec<_>>();
+        match attempted {
+            Ok(mut execution) => {
+                execution.host_events = host_events;
+                Ok(execution)
+            }
+            Err(error) if host_events.is_empty() => Err(error),
+            Err(error) => Ok(ToolExecution {
+                result: Value::Null,
+                events: Vec::new(),
+                host_events,
+                failure: Some(error.to_string()),
+            }),
+        }
     }
 
     pub fn static_file(&self, path: &str) -> Result<Option<(Vec<u8>, String)>> {
@@ -765,6 +809,9 @@ impl ExtensionManager {
                 if extension.manifest.capabilities.events {
                     provides.push("Event history access".to_owned());
                 }
+                if extension.manifest.capabilities.filesystem {
+                    provides.push("Granted filesystem access".to_owned());
+                }
                 if context_hook_count > 0 {
                     provides.push(format!("{context_hook_count} context hooks"));
                 }
@@ -774,6 +821,16 @@ impl ExtensionManager {
                 let installation = ExtensionInstaller::new(self.directory.clone())
                     .metadata(&extension.manifest.id)
                     .ok();
+                let filesystem_roots = extension
+                    .store
+                    .lock()
+                    .ok()
+                    .and_then(|store| {
+                        store
+                            .extension_filesystem_roots(&extension.manifest.id)
+                            .ok()
+                    })
+                    .unwrap_or_default();
                 ExtensionSummary {
                     id: extension.manifest.id.clone(),
                     name: extension.manifest.name.clone(),
@@ -783,6 +840,7 @@ impl ExtensionManager {
                     capabilities: extension.manifest.capabilities.clone(),
                     provides,
                     installation,
+                    filesystem_roots,
                     main_page: extension
                         .manifest
                         .web
@@ -807,7 +865,85 @@ pub struct ExtensionSummary {
     pub capabilities: ExtensionCapabilities,
     pub provides: Vec<String>,
     pub installation: Option<InstallMetadata>,
+    pub filesystem_roots: Vec<String>,
     pub main_page: Option<String>,
+}
+
+fn create_files_api(lua: &Lua, host: FilesystemHost) -> mlua::Result<mlua::Table> {
+    let files = lua.create_table()?;
+
+    let operation = host.clone();
+    files.set(
+        "list",
+        lua.create_function(move |lua, request: LuaValue| {
+            let request: PathRequest = lua.from_value(request)?;
+            lua.to_value(&operation.list(request).map_err(mlua::Error::external)?)
+        })?,
+    )?;
+    let operation = host.clone();
+    files.set(
+        "read",
+        lua.create_function(move |lua, request: LuaValue| {
+            let request: PathRequest = lua.from_value(request)?;
+            lua.to_value(&operation.read(request).map_err(mlua::Error::external)?)
+        })?,
+    )?;
+    let operation = host.clone();
+    files.set(
+        "write",
+        lua.create_function(move |lua, request: LuaValue| {
+            let request: WriteRequest = lua.from_value(request)?;
+            lua.to_value(&operation.write(request).map_err(mlua::Error::external)?)
+        })?,
+    )?;
+    let operation = host.clone();
+    files.set(
+        "patch",
+        lua.create_function(move |lua, request: LuaValue| {
+            let request: PatchRequest = lua.from_value(request)?;
+            lua.to_value(&operation.patch(request).map_err(mlua::Error::external)?)
+        })?,
+    )?;
+    let operation = host.clone();
+    files.set(
+        "mkdir",
+        lua.create_function(move |lua, request: LuaValue| {
+            let request: PathRequest = lua.from_value(request)?;
+            lua.to_value(
+                &operation
+                    .create_directory(request)
+                    .map_err(mlua::Error::external)?,
+            )
+        })?,
+    )?;
+    let operation = host.clone();
+    files.set(
+        "move",
+        lua.create_function(move |lua, request: LuaValue| {
+            let request: MoveRequest = lua.from_value(request)?;
+            lua.to_value(
+                &operation
+                    .move_path(request)
+                    .map_err(mlua::Error::external)?,
+            )
+        })?,
+    )?;
+    let operation = host.clone();
+    files.set(
+        "delete",
+        lua.create_function(move |lua, request: LuaValue| {
+            let request: PathRequest = lua.from_value(request)?;
+            lua.to_value(&operation.delete(request).map_err(mlua::Error::external)?)
+        })?,
+    )?;
+    files.set(
+        "search",
+        lua.create_function(move |lua, request: LuaValue| {
+            let request: SearchRequest = lua.from_value(request)?;
+            lua.to_value(&host.search(request).map_err(mlua::Error::external)?)
+        })?,
+    )?;
+    Ok(files)
 }
 
 fn create_kv_api(
@@ -1076,6 +1212,69 @@ mod tests {
             match_route("/api/sessions/:id/messages", "/api/sessions/abc/messages").unwrap();
         assert_eq!(params.get("id").map(String::as_str), Some("abc"));
         assert!(match_route("/one", "/two").is_none());
+    }
+
+    #[test]
+    fn filesystem_effect_survives_a_lua_failure() {
+        let extension_directory = tempfile::tempdir().unwrap();
+        fs::write(
+            extension_directory.path().join("extension.toml"),
+            "id = \"example\"\nname = \"Example\"\nversion = \"1.0.0\"\napi_version = 2\n[capabilities]\ntools = true\nfilesystem = true\n",
+        )
+        .unwrap();
+        fs::write(
+            extension_directory.path().join("extension.lua"),
+            concat!(
+                "habibi.tools.register({ name = \"example.write\", description = \"Write\", input_schema = { type = \"object\" } }, function(arguments)\n",
+                "  habibi.files.write(arguments)\n",
+                "  return missing_function()\n",
+                "end)\n",
+            ),
+        )
+        .unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let store = EventStore::open(":memory:").unwrap().shared();
+        store
+            .lock()
+            .unwrap()
+            .set_extension_filesystem_roots(
+                "example",
+                &[workspace.path().to_str().unwrap().to_owned()],
+            )
+            .unwrap();
+        let extension = LoadedExtension::load(extension_directory.path(), store).unwrap();
+        let trigger = Event::new(
+            "test.trigger",
+            "test",
+            uuid::Uuid::now_v7(),
+            None,
+            serde_json::json!({}),
+        );
+        let output = workspace.path().join("created.txt");
+        let execution = extension
+            .execute_tool(
+                &ToolCall {
+                    call_id: "call-1".into(),
+                    name: "example.write".into(),
+                    arguments: serde_json::json!({
+                        "path": output,
+                        "content": "sentinel-content"
+                    }),
+                },
+                &ToolContext {
+                    trigger: trigger.clone(),
+                    current_event: trigger.clone(),
+                    correlation_id: trigger.correlation_id,
+                },
+            )
+            .unwrap();
+        assert!(execution.failure.is_some());
+        assert_eq!(execution.host_events.len(), 1);
+        assert_eq!(
+            execution.host_events[0].event_type,
+            "workspace.file.created"
+        );
+        assert_eq!(fs::read_to_string(output).unwrap(), "sentinel-content");
     }
 
     #[test]

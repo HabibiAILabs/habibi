@@ -3,6 +3,7 @@ mod catalog;
 mod context;
 mod event;
 mod extension;
+mod filesystem;
 mod installer;
 mod model;
 mod reactor;

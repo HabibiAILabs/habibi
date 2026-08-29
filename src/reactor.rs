@@ -477,6 +477,17 @@ impl Reactor {
             let (output, result_event, level, log_payload) = match execution {
                 Ok(execution) => {
                     let mut effect_ids = Vec::new();
+                    for draft in execution.host_events {
+                        let effect = Event::new(
+                            draft.event_type,
+                            "host:filesystem",
+                            root_trigger.correlation_id,
+                            Some(requested.id),
+                            draft.payload,
+                        );
+                        self.append(&effect)?;
+                        effect_ids.push(effect.id);
+                    }
                     for draft in execution.events {
                         validate_effect_namespace(&call.name, &draft.event_type)?;
                         let effect = Event::new(
@@ -489,25 +500,47 @@ impl Reactor {
                         self.append(&effect)?;
                         effect_ids.push(effect.id);
                     }
-                    let output = json!({ "ok": true, "result": execution.result });
-                    let result_event = Event::new(
-                        "action.result.succeeded",
-                        "habibi",
-                        root_trigger.correlation_id,
-                        Some(requested.id),
-                        json!({
-                            "batch_id": batch_id, "action_id": action_id, "index": index,
-                            "tool_call_id": call.call_id, "tool": call.name,
-                            "result": execution.result, "effect_event_ids": effect_ids,
-                            "tool_catalog_generation": catalog.generation
-                        }),
-                    );
-                    (
-                        output,
-                        result_event,
-                        "info",
-                        json!({ "effect_event_ids": effect_ids }),
-                    )
+                    if let Some(error) = execution.failure {
+                        let output = json!({ "ok": false, "error": error });
+                        let result_event = Event::new(
+                            "action.result.failed",
+                            "habibi",
+                            root_trigger.correlation_id,
+                            Some(requested.id),
+                            json!({
+                                "batch_id": batch_id, "action_id": action_id, "index": index,
+                                "tool_call_id": call.call_id, "tool": call.name,
+                                "error": { "message": error }, "effect_event_ids": effect_ids,
+                                "tool_catalog_generation": catalog.generation
+                            }),
+                        );
+                        (
+                            output,
+                            result_event,
+                            "error",
+                            json!({ "error": error, "effect_event_ids": effect_ids }),
+                        )
+                    } else {
+                        let output = json!({ "ok": true, "result": execution.result });
+                        let result_event = Event::new(
+                            "action.result.succeeded",
+                            "habibi",
+                            root_trigger.correlation_id,
+                            Some(requested.id),
+                            json!({
+                                "batch_id": batch_id, "action_id": action_id, "index": index,
+                                "tool_call_id": call.call_id, "tool": call.name,
+                                "result": execution.result, "effect_event_ids": effect_ids,
+                                "tool_catalog_generation": catalog.generation
+                            }),
+                        );
+                        (
+                            output,
+                            result_event,
+                            "info",
+                            json!({ "effect_event_ids": effect_ids }),
+                        )
+                    }
                 }
                 Err(error) => {
                     let output = json!({ "ok": false, "error": error.to_string() });
@@ -790,6 +823,9 @@ struct BatchExecution {
 }
 
 fn validate_effect_namespace(tool_name: &str, event_type: &str) -> Result<()> {
+    if event_type.starts_with("workspace.") {
+        anyhow::bail!("workspace effect events can only be emitted by the filesystem host");
+    }
     if tool_name.starts_with("habibi.") {
         return Ok(());
     }
@@ -804,6 +840,16 @@ fn validate_effect_namespace(tool_name: &str, event_type: &str) -> Result<()> {
 mod tests {
     use super::*;
     use crate::{extension::ExtensionManager, store::EventStore};
+
+    #[test]
+    fn rejects_lua_authored_workspace_effects() {
+        assert!(
+            validate_effect_namespace("workspace.write", "workspace.file.written")
+                .unwrap_err()
+                .to_string()
+                .contains("filesystem host")
+        );
+    }
 
     #[test]
     fn prunes_searched_but_unused_tools_after_one_advertisement() {

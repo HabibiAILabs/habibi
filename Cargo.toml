@@ -8,6 +8,8 @@ license = "MIT"
 [dependencies]
 anyhow = "1"
 base64 = "0.22"
+cap-fs-ext = "4"
+cap-std = "4"
 axum = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
 dotenvy = "0.15"
@@ -17,6 +19,7 @@ mime_guess = "2"
 mlua = { version = "0.11", features = ["lua54", "send", "serialize", "vendored"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
+rustix = { version = "1", features = ["fs"] }
 semver = "1"
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }

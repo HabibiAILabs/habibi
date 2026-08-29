@@ -17,6 +17,7 @@ use uuid::Uuid;
 use crate::{
     event::Event,
     extension::{ExtensionManager, RequestData, RouteOutcome},
+    filesystem::normalize_grant_roots,
     installer::ExtensionInstaller,
     reactor::Reactor,
     store::{SharedEventStore, StoreEventQuery, StoreLogQuery},
@@ -52,6 +53,10 @@ pub fn router(state: WebState) -> Router {
         .route("/api/models/refresh", post(refresh_models))
         .route("/api/extensions", get(list_extensions))
         .route("/api/extensions/{extension_id}", put(toggle_extension))
+        .route(
+            "/api/extensions/{extension_id}/grants",
+            get(extension_grants).put(update_extension_grants),
+        )
         .route(
             "/api/extensions/{extension_id}/check-update",
             post(check_extension_update),
@@ -362,6 +367,94 @@ async fn toggle_extension(
             StatusCode::NOT_FOUND,
             json!({ "error": "extension not found" }),
         ),
+        Err(error) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": error.to_string() }),
+        ),
+    }
+}
+
+#[derive(Deserialize)]
+struct ExtensionGrantsUpdate {
+    filesystem_roots: Vec<String>,
+}
+
+async fn extension_grants(
+    State(state): State<WebState>,
+    Path(extension_id): Path<String>,
+) -> Response {
+    let Some(extension) = state.extensions.get(&extension_id) else {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "extension not found" }),
+        );
+    };
+    if !extension.manifest.capabilities.filesystem {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "extension does not request filesystem access" }),
+        );
+    }
+    match state
+        .store
+        .lock()
+        .map_err(|_| anyhow::anyhow!("event store lock poisoned"))
+        .and_then(|store| store.extension_filesystem_roots(&extension_id))
+    {
+        Ok(filesystem_roots) => json_response(
+            StatusCode::OK,
+            json!({ "filesystem_roots": filesystem_roots }),
+        ),
+        Err(error) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": error.to_string() }),
+        ),
+    }
+}
+
+async fn update_extension_grants(
+    State(state): State<WebState>,
+    Path(extension_id): Path<String>,
+    axum::Json(update): axum::Json<ExtensionGrantsUpdate>,
+) -> Response {
+    let _reaction_guard = state.reaction_lock.lock().await;
+    let Some(extension) = state.extensions.get(&extension_id) else {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "extension not found" }),
+        );
+    };
+    if !extension.manifest.capabilities.filesystem {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "extension does not request filesystem access" }),
+        );
+    }
+    let normalized =
+        match tokio::task::spawn_blocking(move || normalize_grant_roots(&update.filesystem_roots))
+            .await
+        {
+            Ok(Ok(roots)) => roots,
+            Ok(Err(error)) => {
+                return json_response(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": error.to_string() }),
+                );
+            }
+            Err(error) => {
+                return json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({ "error": error.to_string() }),
+                );
+            }
+        };
+    match state
+        .store
+        .lock()
+        .map_err(|_| anyhow::anyhow!("event store lock poisoned"))
+        .and_then(|store| store.set_extension_filesystem_roots(&extension_id, &normalized))
+    {
+        Ok(()) => json_response(StatusCode::OK, json!({ "filesystem_roots": normalized })),
         Err(error) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": error.to_string() }),

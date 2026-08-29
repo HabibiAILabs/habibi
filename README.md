@@ -83,11 +83,12 @@ Then open `http://127.0.0.1:8787`. The home page presents Habibi itself; extensi
 and enable/disable controls live at `/extensions`. Domain history is at `/events`; detailed
 operational execution is at `/logs`; token, cache, and estimated-cost totals are at `/stats`.
 
-Extensions are installed separately from the core runtime. Install the official chat extension
-from GitHub, then start Habibi:
+Extensions are installed separately from the core runtime. Install the official Chat and Workspace
+extensions from GitHub, then start Habibi:
 
 ```sh
 mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir chat
+mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir workspace
 mise exec -- cargo run
 ```
 
@@ -95,6 +96,7 @@ You can also install a local checkout:
 
 ```sh
 mise exec -- cargo run -- install ../habibi-extensions --subdir chat
+mise exec -- cargo run -- install ../habibi-extensions --subdir workspace
 ```
 
 Installed extensions retain source, revision, semantic version, content hash, capabilities, and
@@ -108,7 +110,8 @@ security boundary. Every install and update is staged, automatically security/pr
 Lua-validated before it can enter the active runtime; blocking findings abort the operation and
 warnings remain visible in installation metadata and the Extensions UI. See [`SECURITY.md`](SECURITY.md)
 for the scanner's coverage and limitations. Chat stores sessions and messages as `chat.*` events
-and keeps UI preferences in its private KV namespace.
+and keeps UI preferences in its private KV namespace. Workspace remains denied until the user saves
+one or more existing absolute root directories on the Extensions page.
 
 ## Events API
 
@@ -162,7 +165,14 @@ GET    /extensions/chat/api/preferences
 PUT    /extensions/chat/api/preferences
 ```
 
-See [`docs/extensions.md`](docs/extensions.md) for the extension contract.
+## Workspace extension
+
+The official Workspace extension provides searchable tools for bounded directory listing, UTF-8
+reads, literal search, checked atomic writes and patches, one-level directory creation, same-root
+moves, and nonrecursive deletion. Configure granted roots on `/extensions`; no grant means no
+filesystem access. Tool search advertises Workspace definitions only when they are relevant.
+
+See [`docs/extensions.md`](docs/extensions.md) for the extension contract and host API guarantees.
 
 ## Test
 
@@ -187,6 +197,16 @@ The chat extension owns:
 - `chat.session.renamed`
 - `chat.session.archived`
 - `chat.message.created`
+
+The filesystem host owns:
+
+- `workspace.file.created`
+- `workspace.file.written`
+- `workspace.file.patched`
+- `workspace.file.deleted`
+- `workspace.directory.created`
+- `workspace.directory.deleted`
+- `workspace.entry.moved`
 
 SQLite's `events.sequence` is canonical domain-event order. Logs have an independent operational
 sequence. Timestamps are informational.

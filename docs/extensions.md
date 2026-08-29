@@ -44,6 +44,7 @@ kv = true
 events = true
 tools = true
 context = true
+filesystem = true
 
 [web]
 static_dir = "web"
@@ -208,6 +209,40 @@ code cannot select another extension's namespace.
 
 KV is intended for incidental mutable state such as preferences, drafts, and caches. Domain
 history should generally remain event-sourced.
+
+## Granted filesystem access
+
+The `filesystem` capability exposes `habibi.files`, but grants no paths by itself. Users grant
+existing absolute directories from the Extensions page. An extension cannot create or broaden its
+own grants. Empty grants deny every operation.
+
+```lua
+local file = habibi.files.read({ path = "/home/user/project/README.md" })
+local changed = habibi.files.patch({
+  path = file.path,
+  old_text = "old text",
+  new_text = "new text",
+  expected_sha256 = file.sha256
+})
+```
+
+Available host operations are `list`, `read`, `search`, `write`, `patch`, `mkdir`, `move`, and
+`delete`. Paths must be absolute, remain beneath a granted canonical root, and contain no `.` or
+`..` components. Capability-based directory handles confine actual reads and mutations; symbolic
+links and special files are not followed. Reads and writes are limited to 2 MiB. Search is bounded
+by query length, depth, entries, files, bytes, matches, and output preview size.
+
+Creating a file requires a missing destination. Replacing or patching an existing file requires the
+exact SHA-256 returned by `read`; stale writes fail without changing the target. Writes use a synced
+temporary file and atomic rename. Deletes are nonrecursive and cannot delete a granted root. Moves
+cannot cross granted roots or overwrite intentionally existing destinations.
+
+Filesystem mutations are serialized within one loaded extension generation. Core—not Lua—records
+host-authored `workspace.*` mutation effects, including when Lua fails after the mutation. Effect
+payloads contain paths, hashes, and sizes, never file contents or patch text. Action requests,
+action results, and exact model logs still retain tool arguments/results under Habibi's existing
+observability policy; filesystem grants are therefore a scope boundary, not a secret-content
+redaction feature.
 
 ## JSON arrays
 

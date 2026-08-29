@@ -43,6 +43,10 @@ pub struct ToolExecution {
     pub result: Value,
     #[serde(default)]
     pub events: Vec<EventDraft>,
+    #[serde(skip)]
+    pub host_events: Vec<EventDraft>,
+    #[serde(skip)]
+    pub failure: Option<String>,
 }
 
 #[derive(Clone)]
@@ -198,6 +202,8 @@ impl ToolRuntime {
         Ok(ToolExecution {
             result: json!({ "event": event }),
             events: vec![],
+            host_events: vec![],
+            failure: None,
         })
     }
 
@@ -249,6 +255,8 @@ impl ToolRuntime {
         Ok(ToolExecution {
             result: json!({ "events": events }),
             events: vec![],
+            host_events: vec![],
+            failure: None,
         })
     }
 
@@ -301,6 +309,8 @@ impl ToolRuntime {
                     "bidirectional": bidirectional
                 }),
             }],
+            host_events: vec![],
+            failure: None,
         })
     }
 
@@ -314,6 +324,8 @@ impl ToolRuntime {
         Ok(ToolExecution {
             result: json!({ "log": log }),
             events: vec![],
+            host_events: vec![],
+            failure: None,
         })
     }
 
@@ -368,6 +380,8 @@ impl ToolRuntime {
         Ok(ToolExecution {
             result: json!({ "logs": logs }),
             events: vec![],
+            host_events: vec![],
+            failure: None,
         })
     }
 
@@ -411,6 +425,8 @@ impl ToolRuntime {
         Ok(ToolExecution {
             result: json!({ "tools": tools }),
             events: vec![],
+            host_events: vec![],
+            failure: None,
         })
     }
 
@@ -430,6 +446,8 @@ impl ToolRuntime {
         Ok(ToolExecution {
             result: json!({ "links": links }),
             events: vec![],
+            host_events: vec![],
+            failure: None,
         })
     }
 }

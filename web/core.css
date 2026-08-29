@@ -49,6 +49,11 @@ button { font: inherit; }
 .scan-status { margin: 8px 0 0; color: var(--muted); font-size: 11px; }
 .scan-status.passed { color: var(--green); }
 .scan-status.failed { color: #ff9b9b; }
+.grant-editor { display: grid; max-width: 680px; gap: 7px; margin-top: 16px; border-top: 1px solid var(--line); padding-top: 14px; }
+.grant-editor label { font-size: 12px; font-weight: 650; }
+.grant-editor small { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.grant-editor textarea { width: 100%; resize: vertical; border: 1px solid var(--line); border-radius: 9px; padding: 10px; background: var(--bg); color: var(--text); font: 12px/1.5 ui-monospace, monospace; }
+.grant-editor button { width: max-content; cursor: pointer; color: var(--text); }
 .open-link { border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; background: var(--raised); }
 .toggle { position: relative; width: 46px; height: 26px; border: 0; border-radius: 999px; background: #39423b; }
 .toggle::after { position: absolute; top: 4px; left: 4px; width: 18px; height: 18px; border-radius: 50%; background: white; content: ""; transition: transform .16s; }

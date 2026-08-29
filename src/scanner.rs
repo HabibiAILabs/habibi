@@ -51,6 +51,7 @@ pub fn scan_extension(directory: &Path, manifest: &ExtensionManifest) -> Result<
         ("events", capabilities.events),
         ("tools", capabilities.tools),
         ("context", capabilities.context),
+        ("filesystem", capabilities.filesystem),
     ] {
         if enabled {
             declared_capabilities.push(name.to_owned());
