@@ -32,6 +32,11 @@ HABIBI_SEARCH_PROVIDER=searxng
 HABIBI_SEARXNG_URL=http://127.0.0.1:18080
 ```
 
+A local SearXNG trial initially returned results, then all default general-search engines became
+suspended by rate limits, CAPTCHA, or timeouts. It is not a dependable no-key GAIA backend. Use a
+Brave API key or a maintained SearXNG deployment before a formal web-enabled run; leave search
+unconfigured otherwise so the unusable tool stays hidden.
+
 ## Smoke benchmark
 
 ```sh
@@ -57,9 +62,11 @@ Using `gpt-5.6-luna` on the 2023 validation data:
   response after tool discovery and therefore produced no chat answer.
 - Five hand-selected no-file reasoning tasks: **3/5 (60%)**.
 
-These are tiny diagnostic slices, not a GAIA score. They exposed and fixed a real redundant Chat
-acknowledgment loop. Remaining leading gaps are empty model completions after discovery, search-only
-web access without page retrieval, and no PDF/Office/image/audio/video analysis tools.
+These are tiny diagnostic slices, not a GAIA score. They exposed and fixed a redundant Chat
+acknowledgment loop, unreliable copying of opaque session UUIDs (now replaced by scoped `current`),
+and repeated pruning telemetry. A configured search suggestion bypasses empty completions after
+registry discovery, but the no-key SearXNG backend proved rate-limited. Remaining leading gaps are a
+reliable search provider, bounded page retrieval, and PDF/Office/image/audio/video analysis tools.
 
 Summarize one or more result files with:
 
