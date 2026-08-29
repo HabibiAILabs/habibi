@@ -214,11 +214,25 @@ impl SearchHost {
         if let Some(freshness) = searxng_freshness(freshness) {
             parameters.push(("time_range", freshness.to_owned()));
         }
-        let response = client
-            .get(endpoint.clone())
-            .query(&parameters)
-            .send()
-            .map_err(|_| anyhow::anyhow!("SearXNG request failed"))?;
+        let response = match client.get(endpoint.clone()).query(&parameters).send() {
+            Ok(response) => response,
+            Err(_) => return Ok((Vec::new(), vec!["SearXNG request failed".to_owned()])),
+        };
+        if response.status() == StatusCode::TOO_MANY_REQUESTS {
+            return Ok((
+                Vec::new(),
+                vec!["SearXNG returned HTTP 429 (rate limited)".to_owned()],
+            ));
+        }
+        if response.status() != StatusCode::OK && !response.status().is_redirection() {
+            return Ok((
+                Vec::new(),
+                vec![format!(
+                    "SearXNG returned HTTP {}",
+                    response.status().as_u16()
+                )],
+            ));
+        }
         let body = bounded_json(response, "SearXNG")?;
         let results = body
             .get("results")
@@ -389,7 +403,10 @@ mod tests {
         }
     }
 
-    fn serve_json_once(body: &'static str) -> (Url, std::thread::JoinHandle<()>) {
+    fn serve_json_once(
+        status: &'static str,
+        body: &'static str,
+    ) -> (Url, std::thread::JoinHandle<()>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
@@ -400,9 +417,8 @@ mod tests {
             use std::io::Write;
             write!(
                 stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(), body
             )
             .unwrap();
         });
@@ -415,6 +431,7 @@ mod tests {
     #[test]
     fn search_is_action_only_and_normalizes_a_local_searxng_response() {
         let (endpoint, server) = serve_json_once(
+            "200 OK",
             r#"{"results":[{"title":"Example","url":"https://example.com/","content":"Snippet","engine":"test"}]}"#,
         );
         let host = test_host(endpoint);
@@ -441,6 +458,7 @@ mod tests {
     #[test]
     fn forwards_searxng_engine_suspensions_as_non_retryable() {
         let (endpoint, server) = serve_json_once(
+            "200 OK",
             r#"{"results":[],"unresponsive_engines":[["brave","Suspended: account suspended"],["google","Suspended: CAPTCHA"]]}"#,
         );
         let host = test_host(endpoint);
@@ -459,6 +477,26 @@ mod tests {
                 "brave: Suspended: account suspended",
                 "google: Suspended: CAPTCHA"
             ]
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn forwards_searxng_rate_limits_as_non_retryable() {
+        let (endpoint, server) = serve_json_once("429 Too Many Requests", "");
+        let host = test_host(endpoint);
+        let _guard = host.begin_action().unwrap();
+        let response = host
+            .search(SearchRequest {
+                query: "public query".into(),
+                count: Some(5),
+                freshness: Freshness::Any,
+            })
+            .unwrap();
+        assert!(!response.retryable);
+        assert_eq!(
+            response.provider_errors,
+            ["SearXNG returned HTTP 429 (rate limited)"]
         );
         server.join().unwrap();
     }

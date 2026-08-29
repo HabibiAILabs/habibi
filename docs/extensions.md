@@ -311,8 +311,8 @@ loopback HTTP. Redirects are rejected; requests time out after 10 seconds; respo
 1 MiB; result counts, titles, snippets, and URLs are bounded; only HTTP(S) citation URLs survive.
 Provider credentials are injected by core and never enter Lua, browser code, events, or logs. An
 unconfigured search host reports `configured() == false`; official Web Search then registers no model
-tool until Habibi is reloaded with provider settings. SearXNG failures are returned as bounded,
-sanitized `provider_errors`; failures without results set `retryable = false`.
+tool until Habibi is reloaded with provider settings. SearXNG HTTP and engine failures are returned
+as bounded, sanitized `provider_errors`; failures without results set `retryable = false`.
 
 Search queries and normalized results do enter durable action/model history and are disclosed to the
 configured provider. Snippets are untrusted third-party input and are not a license to republish page
