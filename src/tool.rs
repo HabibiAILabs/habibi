@@ -53,6 +53,8 @@ pub struct ToolExecution {
     pub host_events: Vec<HostEffect>,
     #[serde(skip)]
     pub failure: Option<String>,
+    #[serde(default)]
+    pub settle: bool,
 }
 
 #[derive(Clone)]
@@ -210,6 +212,7 @@ impl ToolRuntime {
             events: vec![],
             host_events: vec![],
             failure: None,
+            settle: false,
         })
     }
 
@@ -263,6 +266,7 @@ impl ToolRuntime {
             events: vec![],
             host_events: vec![],
             failure: None,
+            settle: false,
         })
     }
 
@@ -317,6 +321,7 @@ impl ToolRuntime {
             }],
             host_events: vec![],
             failure: None,
+            settle: false,
         })
     }
 
@@ -332,6 +337,7 @@ impl ToolRuntime {
             events: vec![],
             host_events: vec![],
             failure: None,
+            settle: false,
         })
     }
 
@@ -388,6 +394,7 @@ impl ToolRuntime {
             events: vec![],
             host_events: vec![],
             failure: None,
+            settle: false,
         })
     }
 
@@ -433,6 +440,7 @@ impl ToolRuntime {
             events: vec![],
             host_events: vec![],
             failure: None,
+            settle: false,
         })
     }
 
@@ -454,6 +462,7 @@ impl ToolRuntime {
             events: vec![],
             host_events: vec![],
             failure: None,
+            settle: false,
         })
     }
 }

@@ -1,4 +1,5 @@
 /target
+/.benchmarks/
 /.env
 /extensions/
 *.db

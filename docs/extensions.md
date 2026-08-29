@@ -114,7 +114,10 @@ A handler may return namespaced effect events. Habibi records every action reque
 an event, records execution diagnostics as logs, and gathers all calls from one processed event
 into a batch. The resulting `action.batch.completed` event is queued with all results in original
 call order and is processed as the next event. There is no internal turn limit: the reaction
-settles when the event queue is empty.
+settles when the event queue is empty. A terminal delivery tool may return `settle = true`; Habibi
+still records its request, result, effects, and `action.batch.completed`, but does not send that batch
+back to the model. Official Chat uses this after delivering the final user-visible message, preventing
+acknowledgment/retry loops without imposing a hidden turn limit on ordinary work.
 
 Only `habibi.tools.search`, event-relevant extension suggestions, tools discovered in the current
 causal chain, and tools already used in that chain are advertised to a model invocation. Extensions

@@ -367,11 +367,13 @@ impl Reactor {
                 trigger.correlation_id,
                 json!({
                     "event_id": current_event.id,
-                    "outcome": "actions_requested",
+                    "outcome": if batch.settles_chain { "terminal_action" } else { "actions_requested" },
                     "next_event_id": batch.completed_event.id
                 }),
             ))?;
-            queue.push_back(batch.completed_event);
+            if !batch.settles_chain {
+                queue.push_back(batch.completed_event);
+            }
         }
 
         self.log(LogEntry::new(
@@ -474,8 +476,9 @@ impl Reactor {
         while let Some((index, action_id, call, requested, duration_ms, execution)) =
             pending.next().await
         {
-            let (output, result_event, level, log_payload) = match execution {
+            let (output, result_event, level, log_payload, settle) = match execution {
                 Ok(execution) => {
+                    let settle = execution.settle;
                     let mut effect_ids = Vec::new();
                     for host_effect in execution.host_events {
                         let effect = Event::new(
@@ -519,6 +522,7 @@ impl Reactor {
                             result_event,
                             "error",
                             json!({ "error": error, "effect_event_ids": effect_ids }),
+                            false,
                         )
                     } else {
                         let output = json!({ "ok": true, "result": execution.result });
@@ -539,6 +543,7 @@ impl Reactor {
                             result_event,
                             "info",
                             json!({ "effect_event_ids": effect_ids }),
+                            settle,
                         )
                     }
                 }
@@ -561,6 +566,7 @@ impl Reactor {
                         result_event,
                         "error",
                         json!({ "error": error.to_string() }),
+                        false,
                     )
                 }
             };
@@ -588,6 +594,7 @@ impl Reactor {
                 call,
                 output,
                 result_event_id: result_event.id,
+                settle,
             });
         }
 
@@ -595,6 +602,7 @@ impl Reactor {
             .into_iter()
             .map(|result| result.context("action batch result missing"))
             .collect::<Result<Vec<_>>>()?;
+        let settles_chain = results.iter().any(|result| result.settle);
         let completed_event = Event::new(
             "action.batch.completed",
             "habibi",
@@ -624,6 +632,7 @@ impl Reactor {
         Ok(BatchExecution {
             results,
             completed_event,
+            settles_chain,
         })
     }
 
@@ -820,10 +829,12 @@ struct ActionResult {
     call: ToolCall,
     output: Value,
     result_event_id: Uuid,
+    settle: bool,
 }
 struct BatchExecution {
     results: Vec<ActionResult>,
     completed_event: Event,
+    settles_chain: bool,
 }
 
 fn validate_effect_namespace(tool_name: &str, event_type: &str) -> Result<()> {

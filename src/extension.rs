@@ -703,6 +703,7 @@ impl LoadedExtension {
                 events: Vec::new(),
                 host_events,
                 failure: Some(error.to_string()),
+                settle: false,
             }),
         }
     }
@@ -1501,6 +1502,45 @@ mod tests {
             execution.host_events[0].event.event_type,
             "process.execution.completed"
         );
+    }
+
+    #[test]
+    fn extension_tools_can_explicitly_settle_a_chain() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("extension.toml"),
+            "id = \"example\"\nname = \"Example\"\nversion = \"1.0.0\"\napi_version = 2\n[capabilities]\ntools = true\n",
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("extension.lua"),
+            "habibi.tools.register({ name = 'example.finish', description = 'Finish', input_schema = { type = 'object' } }, function() return { result = { done = true }, settle = true } end)\n",
+        )
+        .unwrap();
+        let store = EventStore::open(":memory:").unwrap().shared();
+        let extension = LoadedExtension::load(directory.path(), store).unwrap();
+        let trigger = Event::new(
+            "test.trigger",
+            "test",
+            uuid::Uuid::now_v7(),
+            None,
+            serde_json::json!({}),
+        );
+        let execution = extension
+            .execute_tool(
+                &ToolCall {
+                    call_id: "call-1".into(),
+                    name: "example.finish".into(),
+                    arguments: serde_json::json!({}),
+                },
+                &ToolContext {
+                    trigger: trigger.clone(),
+                    current_event: trigger.clone(),
+                    correlation_id: trigger.correlation_id,
+                },
+            )
+            .unwrap();
+        assert!(execution.settle);
     }
 
     #[test]
