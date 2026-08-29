@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Extension Studio · Habibi</title>
+  <link rel="stylesheet" href="/assets/core.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="wordmark" href="/"><img src="/assets/habibi-logo.svg" alt="">Habibi</a>
+    <nav class="topnav"><a href="/events">Events</a><a href="/logs">Logs</a><a href="/stats">Stats</a><a href="/extensions">Extensions</a><a href="/studio" aria-current="page">Studio</a></nav>
+  </header>
+  <main class="studio-shell">
+    <div class="page-heading">
+      <div><p class="eyebrow">LOCAL AUTHORING</p><h1>Extension Studio</h1></div>
+      <p>Create isolated drafts, edit with hash checks, run the installer scanner/runtime validation, then explicitly approve an immutable hash.</p>
+    </div>
+    <div id="studio-status" class="muted" role="status"></div>
+    <section class="studio-grid">
+      <aside class="studio-panel">
+        <h2>Drafts</h2>
+        <form id="create-draft" class="studio-form">
+          <input name="id" required maxlength="64" placeholder="extension-id" aria-label="Extension ID">
+          <input name="name" required maxlength="100" placeholder="Extension name" aria-label="Extension name">
+          <input name="description" required maxlength="500" placeholder="Description" aria-label="Description">
+          <button type="submit">Create draft</button>
+        </form>
+        <div id="draft-list" class="studio-list"></div>
+      </aside>
+      <section class="studio-panel studio-editor-panel">
+        <div class="studio-panel-heading"><h2>Files</h2><div><button id="new-directory" class="secondary" disabled>New directory</button><button id="new-file" class="secondary" disabled>New file</button></div></div>
+        <div id="file-list" class="studio-list studio-files"></div>
+        <label for="file-editor" id="file-label">Select a file</label>
+        <textarea id="file-editor" class="studio-editor" spellcheck="false" disabled></textarea>
+        <button id="save-file" disabled>Save with hash check</button>
+      </section>
+      <aside class="studio-panel">
+        <h2>Review</h2>
+        <button id="validate-draft" disabled>Validate and scan</button>
+        <div id="validation" class="studio-review muted">No validated draft.</div>
+        <button id="install-draft" disabled>Install approved hash</button>
+      </aside>
+    </section>
+  </main>
+  <script type="module" src="/assets/studio.js"></script>
+</body>
+</html>

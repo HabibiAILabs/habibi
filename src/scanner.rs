@@ -53,6 +53,8 @@ pub fn scan_extension(directory: &Path, manifest: &ExtensionManifest) -> Result<
         ("context", capabilities.context),
         ("filesystem", capabilities.filesystem),
         ("process", capabilities.process),
+        ("studio", capabilities.studio),
+        ("search", capabilities.search),
     ] {
         if enabled {
             declared_capabilities.push(name.to_owned());
@@ -243,7 +245,11 @@ fn scan_file(root: &Path, path: &Path, state: &mut ScanState) -> Result<()> {
             "package.",
             "debug.",
         ] {
-            if lower.contains(marker) {
+            if lower.match_indices(marker).any(|(index, _)| {
+                index == 0
+                    || !lower.as_bytes()[index - 1].is_ascii_alphanumeric()
+                        && lower.as_bytes()[index - 1] != b'_'
+            }) {
                 add(
                     state,
                     FindingSeverity::Warning,
@@ -297,6 +303,18 @@ mod tests {
             },
             web: None,
         }
+    }
+
+    #[test]
+    fn does_not_mistake_studio_for_the_restricted_io_api() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("extension.lua"),
+            "return habibi.studio.list()\n",
+        )
+        .unwrap();
+        let report = scan_extension(directory.path(), &manifest()).unwrap();
+        assert_eq!(report.warning_count, 0);
     }
 
     #[test]

@@ -115,6 +115,21 @@ pre { max-height: 520px; overflow: auto; border-radius: 10px; padding: 14px; bac
 .usage-table tr:last-child td { border-bottom: 0; }
 .pricing-note { border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; color: var(--muted); background: var(--panel); font-size: 13px; line-height: 1.6; }
 .pricing-note code { color: var(--green); }
+.studio-shell { width: min(1500px, calc(100% - 32px)); margin: 36px auto; }
+.studio-grid { display: grid; grid-template-columns: minmax(210px, .7fr) minmax(420px, 1.8fr) minmax(280px, 1fr); gap: 16px; align-items: start; }
+.studio-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 18px; display: grid; gap: 12px; min-width: 0; }
+.studio-panel h2 { margin: 0; font-size: 1rem; }
+.studio-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.studio-panel-heading div { display: flex; gap: 8px; }
+.studio-form { display: grid; gap: 8px; }
+.studio-form input, .studio-editor { width: 100%; box-sizing: border-box; }
+.studio-list { display: grid; gap: 6px; max-height: 300px; overflow: auto; }
+.studio-list-item { border: 1px solid var(--line); background: transparent; color: var(--text); text-align: left; overflow-wrap: anywhere; }
+.studio-list-item.selected { border-color: var(--green); background: color-mix(in srgb, var(--green) 12%, transparent); }
+.studio-editor { min-height: 430px; resize: vertical; font: .84rem/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; tab-size: 2; }
+.studio-review { overflow-wrap: anywhere; }
+.studio-review pre { white-space: pre-wrap; font-size: .78rem; }
+@media (max-width: 1000px) { .studio-grid { grid-template-columns: 1fr; } .studio-editor { min-height: 320px; } }
 @media (max-width: 700px) {
   .page-heading { grid-template-columns: 1fr; gap: 14px; }
   .extension-card { grid-template-columns: 1fr; }

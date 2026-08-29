@@ -83,13 +83,16 @@ Then open `http://127.0.0.1:8787`. The home page presents Habibi itself; extensi
 and enable/disable controls live at `/extensions`. Domain history is at `/events`; detailed
 operational execution is at `/logs`; token, cache, and estimated-cost totals are at `/stats`.
 
-Extensions are installed separately from the core runtime. Install the official Chat, Workspace,
-and Linux Process extensions from GitHub, then start Habibi:
+Extensions are installed separately from the core runtime. Install the official packages you need,
+then start Habibi:
 
 ```sh
 mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir chat
 mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir workspace
 mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir process
+mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir git
+mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir extension-studio
+mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir web-search
 mise exec -- cargo run
 ```
 
@@ -99,6 +102,9 @@ You can also install a local checkout:
 mise exec -- cargo run -- install ../habibi-extensions --subdir chat
 mise exec -- cargo run -- install ../habibi-extensions --subdir workspace
 mise exec -- cargo run -- install ../habibi-extensions --subdir process
+mise exec -- cargo run -- install ../habibi-extensions --subdir git
+mise exec -- cargo run -- install ../habibi-extensions --subdir extension-studio
+mise exec -- cargo run -- install ../habibi-extensions --subdir web-search
 ```
 
 Installed extensions retain source, revision, semantic version, content hash, capabilities, and
@@ -181,6 +187,24 @@ evaluation. Each invocation verifies the executable hash, executes sealed bytes 
 network and ambient environment access, exposes one granted filesystem root, bounds output/time, and
 kills the complete delegated cgroup afterward. Configure both root and executable grants on
 `/extensions`. Arguments and returned output are durable; never use process tools for secrets.
+
+## Git extension
+
+Git `0.1` provides read-only status, diff, log, and show tools through Process. Each repository must
+be an exact filesystem grant and is mounted read-only. Git hooks, fsmonitor, pagers, optional locks,
+external diff/textconv, signatures, networking, and submodule traversal are disabled where relevant.
+
+## Extension Studio
+
+`/studio` provides a host-owned draft editor and review flow. Drafts use relative allowlisted text
+paths, SHA-256 checked edits, the real package scanner and isolated runtime validation, and explicit
+hash-bound installation. Model tools can create/edit/validate drafts but cannot install them.
+
+## Web Search extension
+
+Web Search supports Brave Search API or an explicitly configured self-hosted SearXNG origin. It
+returns bounded source URLs and snippets without fetching pages. Queries leave Habibi and remain in
+durable action/model history. Provider credentials stay host-side.
 
 See [`docs/extensions.md`](docs/extensions.md) for the extension contract and host API guarantees.
 

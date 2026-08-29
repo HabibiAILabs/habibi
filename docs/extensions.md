@@ -46,6 +46,8 @@ tools = true
 context = true
 filesystem = true
 process = true
+studio = true
+search = true
 
 [web]
 static_dir = "web"
@@ -257,7 +259,9 @@ local outcome = habibi.process.run({
   executable = "git",
   args = habibi.array({ "status", "--porcelain=v1" }),
   cwd = "/home/user/project",
-  timeout_ms = 30000
+  timeout_ms = 30000,
+  filesystem_root = "/home/user/project", -- optional exact grant
+  filesystem_access = "read_only"         -- defaults to read_write
 })
 ```
 
@@ -269,7 +273,9 @@ or network. Explicitly granting a native interpreter grants its normal argv auth
 Arguments are literal argv entries, limited to 128 entries and 64 KiB total.
 
 Each run uses Bubblewrap namespaces and a delegated cgroup v2 leaf. The sandbox receives a minimal
-runtime filesystem plus one selected filesystem grant mounted read-write. Stdout and stderr are
+runtime filesystem plus one selected filesystem grant. Callers may require an exact grant with
+`filesystem_root` and mount it `read_only`; otherwise the containing grant is mounted read-write.
+Stdout and stderr are
 drained concurrently and capped at 1 MiB each. Timeout defaults to 30 seconds and is capped at 120
 seconds. Completion, timeout, and output overflow kill the whole cgroup. Execution fails closed when
 Bubblewrap or delegated cgroup v2 is unavailable.
@@ -277,6 +283,34 @@ Bubblewrap or delegated cgroup v2 is unavailable.
 Core emits a host-authored `process.execution.completed` effect with executable alias/hash, cwd,
 outcome, duration, exit status, and byte counts—never argv or output. Tool arguments, returned output,
 action results, and exact model logs remain durable. Do not use process tools for secrets.
+
+## Extension Studio
+
+The `studio` capability exposes `habibi.studio` only inside registered tool actions. It operates on
+the host-owned `HABIBI_EXTENSION_DRAFTS_DIR`; extensions cannot select another root. APIs are
+`list`, `create`, `list_files`, `read`, `write`, `mkdir`, and `validate`. Paths are draft IDs plus
+relative `.toml`, `.lua`, `.html`, `.css`, `.js`, `.md`, or `.json` paths. Existing-file writes
+require the SHA-256 returned by `read`; symbolic links, binary files, traversal, recursive directory
+creation, deletion, and model-triggered installation are excluded.
+
+The loopback-only `/studio` UI uses the same service. Validation computes the package hash, runs the
+security/privacy scanner, and loads the extension against an isolated in-memory store. Installation
+requires an explicit browser confirmation for that exact passing hash, reruns the normal installer
+pipeline, rejects drift, and preserves normal version-bump and rollback rules. Installed extensions
+remain fully trusted local code.
+
+## Web search
+
+The `search` capability exposes action-only `habibi.search.search`. It is a narrow search adapter,
+not generic HTTP. Configure `HABIBI_SEARCH_PROVIDER=brave` with `HABIBI_BRAVE_SEARCH_API_KEY`, or
+`searxng` with one exact `HABIBI_SEARXNG_URL`. SearXNG accepts HTTPS or explicitly configured
+loopback HTTP. Redirects are rejected; requests time out after 10 seconds; responses are capped at
+1 MiB; result counts, titles, snippets, and URLs are bounded; only HTTP(S) citation URLs survive.
+Provider credentials are injected by core and never enter Lua, browser code, events, or logs.
+
+Search queries and normalized results do enter durable action/model history and are disclosed to the
+configured provider. Snippets are untrusted third-party input and are not a license to republish page
+content. Version 0.1 does not fetch result pages.
 
 ## JSON arrays
 

@@ -52,6 +52,17 @@ pub struct ProcessRequest {
     pub args: Vec<String>,
     pub cwd: String,
     pub timeout_ms: Option<u64>,
+    pub filesystem_root: Option<String>,
+    #[serde(default)]
+    pub filesystem_access: FilesystemAccess,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FilesystemAccess {
+    ReadOnly,
+    #[default]
+    ReadWrite,
 }
 
 #[derive(Debug, Serialize)]
@@ -123,7 +134,8 @@ impl ProcessHost {
             .map_err(|_| anyhow::anyhow!("process execution lock poisoned"))?;
         let grant = self.executable_grant(&request.executable)?;
         let image = verified_executable(&grant)?;
-        let (filesystem_root, root_handle, cwd) = self.authorized_cwd(&request.cwd)?;
+        let (filesystem_root, root_handle, cwd) =
+            self.authorized_cwd(&request.cwd, request.filesystem_root.as_deref())?;
         let timeout = Duration::from_millis(request.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
         let started = Instant::now();
         let execution = execute_sandboxed(
@@ -132,6 +144,7 @@ impl ProcessHost {
             root_handle,
             &cwd,
             &request.args,
+            &request.filesystem_access,
             timeout,
         );
         let duration_ms = started.elapsed().as_millis() as u64;
@@ -145,6 +158,8 @@ impl ProcessHost {
                     "executable": grant.alias,
                     "executable_sha256": grant.sha256,
                     "cwd": request.cwd,
+                    "filesystem_root": filesystem_root,
+                    "filesystem_access": request.filesystem_access,
                     "status": result.status,
                     "success": result.success,
                     "code": result.code,
@@ -172,7 +187,11 @@ impl ProcessHost {
             .with_context(|| format!("process executable alias '{alias}' is not granted"))
     }
 
-    fn authorized_cwd(&self, requested: &str) -> Result<(PathBuf, File, PathBuf)> {
+    fn authorized_cwd(
+        &self,
+        requested: &str,
+        requested_root: Option<&str>,
+    ) -> Result<(PathBuf, File, PathBuf)> {
         let path = strict_absolute_path(requested)?;
         let canonical = fs::canonicalize(&path)
             .with_context(|| format!("process cwd '{}' does not exist", path.display()))?;
@@ -184,11 +203,22 @@ impl ProcessHost {
             .lock()
             .map_err(|_| anyhow::anyhow!("event store lock poisoned"))?
             .extension_filesystem_roots(&self.extension_id)?;
-        let root = roots
-            .into_iter()
-            .map(PathBuf::from)
-            .find(|root| canonical.starts_with(root))
-            .context("process cwd is outside the extension's filesystem grants")?;
+        let root = if let Some(requested_root) = requested_root {
+            let requested_root = strict_absolute_path(requested_root)?;
+            if !roots.iter().any(|root| Path::new(root) == requested_root) {
+                bail!("requested process filesystem root is not an exact extension grant");
+            }
+            if !canonical.starts_with(&requested_root) {
+                bail!("process cwd is outside the requested filesystem root");
+            }
+            requested_root
+        } else {
+            roots
+                .into_iter()
+                .map(PathBuf::from)
+                .find(|root| canonical.starts_with(root))
+                .context("process cwd is outside the extension's filesystem grants")?
+        };
         let root_handle = File::from(open(
             &root,
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
@@ -321,6 +351,7 @@ fn execute_sandboxed(
     root: File,
     cwd: &Path,
     args: &[String],
+    filesystem_access: &FilesystemAccess,
     timeout: Duration,
 ) -> Result<ProcessResult> {
     let memfd = memfd_create("habibi-process", MemfdFlags::ALLOW_SEALING)?;
@@ -385,7 +416,10 @@ fn execute_sandboxed(
         ]);
     add_sandbox_directory(&mut command, filesystem_root);
     command
-        .arg("--bind")
+        .arg(match filesystem_access {
+            FilesystemAccess::ReadOnly => "--ro-bind",
+            FilesystemAccess::ReadWrite => "--bind",
+        })
         .arg(format!("/proc/self/fd/{}", root.as_raw_fd()))
         .arg(filesystem_root)
         .arg("--chdir")
@@ -659,6 +693,8 @@ mod tests {
                 args: vec![],
                 cwd: root.path().to_string_lossy().into_owned(),
                 timeout_ms: None,
+                filesystem_root: None,
+                filesystem_access: FilesystemAccess::ReadWrite,
             })
             .unwrap_err()
             .to_string()
@@ -680,6 +716,8 @@ mod tests {
                 args: vec![],
                 cwd: root.path().to_string_lossy().into_owned(),
                 timeout_ms: Some(5_000),
+                filesystem_root: None,
+                filesystem_access: FilesystemAccess::ReadWrite,
             })
             .unwrap();
         assert_eq!(result.status, "output_limit");
@@ -704,6 +742,8 @@ mod tests {
                 ],
                 cwd: root.path().to_string_lossy().into_owned(),
                 timeout_ms: Some(100),
+                filesystem_root: None,
+                filesystem_access: FilesystemAccess::ReadWrite,
             })
             .unwrap();
         assert_eq!(result.status, "timed_out");
@@ -725,10 +765,62 @@ mod tests {
                 args: vec!["10".into()],
                 cwd: root.path().to_string_lossy().into_owned(),
                 timeout_ms: Some(30),
+                filesystem_root: None,
+                filesystem_access: FilesystemAccess::ReadWrite,
             })
             .unwrap();
         assert_eq!(result.status, "timed_out");
         assert!(!result.success);
+    }
+
+    #[test]
+    fn exact_read_only_root_supports_git_inspection() {
+        if !backend_available() {
+            return;
+        }
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let host = host(root, "/usr/bin/git");
+        let _guard = host.begin_action().unwrap();
+        let result = host
+            .run(ProcessRequest {
+                executable: "test".into(),
+                args: vec![
+                    "--no-pager".into(),
+                    "--no-optional-locks".into(),
+                    "status".into(),
+                    "--short".into(),
+                ],
+                cwd: root.to_string_lossy().into_owned(),
+                timeout_ms: Some(5_000),
+                filesystem_root: Some(root.to_string_lossy().into_owned()),
+                filesystem_access: FilesystemAccess::ReadOnly,
+            })
+            .unwrap();
+        assert!(result.success, "{result:?}");
+    }
+
+    #[test]
+    fn exact_read_only_roots_prevent_mutation() {
+        if !backend_available() {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("note.txt");
+        fs::write(&file, "unchanged").unwrap();
+        let host = host(root.path(), "/usr/bin/touch");
+        let _guard = host.begin_action().unwrap();
+        let result = host
+            .run(ProcessRequest {
+                executable: "test".into(),
+                args: vec![file.to_string_lossy().into_owned()],
+                cwd: root.path().to_string_lossy().into_owned(),
+                timeout_ms: Some(5_000),
+                filesystem_root: Some(root.path().to_string_lossy().into_owned()),
+                filesystem_access: FilesystemAccess::ReadOnly,
+            })
+            .unwrap();
+        assert!(!result.success);
+        assert_eq!(fs::read_to_string(file).unwrap(), "unchanged");
     }
 
     #[test]
@@ -747,6 +839,8 @@ mod tests {
                 args: vec![outside.path().to_string_lossy().into_owned()],
                 cwd: root.path().to_string_lossy().into_owned(),
                 timeout_ms: Some(5_000),
+                filesystem_root: None,
+                filesystem_access: FilesystemAccess::ReadWrite,
             })
             .unwrap();
         assert!(!result.success);
@@ -767,6 +861,8 @@ mod tests {
                 args: vec![],
                 cwd: root.path().to_string_lossy().into_owned(),
                 timeout_ms: Some(5_000),
+                filesystem_root: None,
+                filesystem_access: FilesystemAccess::ReadWrite,
             })
             .unwrap();
         assert!(result.success, "{result:?}");
@@ -789,6 +885,8 @@ mod tests {
             args: vec!["%s".into(), ";$(touch escaped)".into()],
             cwd: root.path().to_string_lossy().into_owned(),
             timeout_ms: Some(5_000),
+            filesystem_root: None,
+            filesystem_access: FilesystemAccess::ReadWrite,
         };
         assert!(
             host.run(request())

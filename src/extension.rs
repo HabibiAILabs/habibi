@@ -28,7 +28,12 @@ use crate::{
         FilesystemHost, MoveRequest, PatchRequest, PathRequest, SearchRequest, WriteRequest,
     },
     installer::{ExtensionInstaller, InstallMetadata},
+    search::{SearchHost, SearchRequest as WebSearchRequest},
     store::{SharedEventStore, StoreEventQuery},
+    studio::{
+        CreateDraftDirectoryRequest, CreateDraftRequest, DraftFileRequest, StudioHost,
+        WriteDraftFileRequest,
+    },
     tool::{HostEffect, ToolCall, ToolContext, ToolDefinition, ToolExecution, provider_tool_name},
 };
 
@@ -61,6 +66,10 @@ pub struct ExtensionCapabilities {
     pub filesystem: bool,
     #[serde(default)]
     pub process: bool,
+    #[serde(default)]
+    pub studio: bool,
+    #[serde(default)]
+    pub search: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -166,6 +175,8 @@ struct LuaState {
     filesystem_host: Option<FilesystemHost>,
     #[cfg(target_os = "linux")]
     process_host: Option<ProcessHost>,
+    studio_host: Option<StudioHost>,
+    search_host: Option<SearchHost>,
 }
 
 pub struct LoadedExtension {
@@ -231,6 +242,16 @@ impl LoadedExtension {
         if manifest.capabilities.process {
             bail!("process capability is supported only on Linux");
         }
+        let studio_host = manifest
+            .capabilities
+            .studio
+            .then(StudioHost::from_env)
+            .transpose()?;
+        let search_host = manifest
+            .capabilities
+            .search
+            .then(SearchHost::from_env)
+            .transpose()?;
         let habibi = lua.create_table()?;
         habibi.set(
             "id",
@@ -256,6 +277,12 @@ impl LoadedExtension {
         #[cfg(target_os = "linux")]
         if let Some(host) = &process_host {
             habibi.set("process", create_process_api(&lua, host.clone())?)?;
+        }
+        if let Some(host) = &studio_host {
+            habibi.set("studio", create_studio_api(&lua, host.clone())?)?;
+        }
+        if let Some(host) = &search_host {
+            habibi.set("search", create_search_api(&lua, host.clone())?)?;
         }
         if manifest.capabilities.tools {
             let tools = lua.create_table()?;
@@ -419,6 +446,8 @@ impl LoadedExtension {
                 filesystem_host,
                 #[cfg(target_os = "linux")]
                 process_host,
+                studio_host,
+                search_host,
             }),
         })
     }
@@ -608,6 +637,16 @@ impl LoadedExtension {
         if let Some(host) = &state.filesystem_host {
             host.clear_effects()?;
         }
+        let _search_action = state
+            .search_host
+            .as_ref()
+            .map(SearchHost::begin_action)
+            .transpose()?;
+        let _studio_action = state
+            .studio_host
+            .as_ref()
+            .map(StudioHost::begin_action)
+            .transpose()?;
         #[cfg(target_os = "linux")]
         let _process_action = state
             .process_host
@@ -863,6 +902,12 @@ impl ExtensionManager {
                 if extension.manifest.capabilities.process {
                     provides.push("Sandboxed process execution".to_owned());
                 }
+                if extension.manifest.capabilities.studio {
+                    provides.push("Scoped extension draft authoring".to_owned());
+                }
+                if extension.manifest.capabilities.search {
+                    provides.push("External web search".to_owned());
+                }
                 if context_hook_count > 0 {
                     provides.push(format!("{context_hook_count} context hooks"));
                 }
@@ -930,6 +975,93 @@ pub struct ExtensionSummary {
     pub filesystem_roots: Vec<String>,
     pub process_executables: Vec<crate::store::ProcessExecutableGrant>,
     pub main_page: Option<String>,
+}
+
+fn create_search_api(lua: &Lua, host: SearchHost) -> mlua::Result<mlua::Table> {
+    let api = lua.create_table()?;
+    api.set(
+        "search",
+        lua.create_function(move |lua, request: LuaValue| {
+            let request: WebSearchRequest = lua.from_value(request)?;
+            lua.to_value(&host.search(request).map_err(mlua::Error::external)?)
+        })?,
+    )?;
+    Ok(api)
+}
+
+fn create_studio_api(lua: &Lua, host: StudioHost) -> mlua::Result<mlua::Table> {
+    let api = lua.create_table()?;
+    let list_host = host.clone();
+    api.set(
+        "list",
+        lua.create_function(move |lua, ()| {
+            lua.to_value(&list_host.list_drafts().map_err(mlua::Error::external)?)
+        })?,
+    )?;
+    let create_host = host.clone();
+    api.set(
+        "create",
+        lua.create_function(move |lua, request: LuaValue| {
+            let request: CreateDraftRequest = lua.from_value(request)?;
+            lua.to_value(
+                &create_host
+                    .create_draft(request)
+                    .map_err(mlua::Error::external)?,
+            )
+        })?,
+    )?;
+    let files_host = host.clone();
+    api.set(
+        "list_files",
+        lua.create_function(move |lua, draft_id: String| {
+            lua.to_value(
+                &files_host
+                    .list_files(&draft_id)
+                    .map_err(mlua::Error::external)?,
+            )
+        })?,
+    )?;
+    let read_host = host.clone();
+    api.set(
+        "read",
+        lua.create_function(move |lua, request: LuaValue| {
+            let request: DraftFileRequest = lua.from_value(request)?;
+            lua.to_value(
+                &read_host
+                    .read_file(request)
+                    .map_err(mlua::Error::external)?,
+            )
+        })?,
+    )?;
+    let write_host = host.clone();
+    api.set(
+        "write",
+        lua.create_function(move |lua, request: LuaValue| {
+            let request: WriteDraftFileRequest = lua.from_value(request)?;
+            lua.to_value(
+                &write_host
+                    .write_file(request)
+                    .map_err(mlua::Error::external)?,
+            )
+        })?,
+    )?;
+    let directory_host = host.clone();
+    api.set(
+        "mkdir",
+        lua.create_function(move |lua, request: LuaValue| {
+            let request: CreateDraftDirectoryRequest = lua.from_value(request)?;
+            directory_host
+                .create_directory(request)
+                .map_err(mlua::Error::external)
+        })?,
+    )?;
+    api.set(
+        "validate",
+        lua.create_function(move |lua, draft_id: String| {
+            lua.to_value(&host.validate(&draft_id).map_err(mlua::Error::external)?)
+        })?,
+    )?;
+    Ok(api)
 }
 
 #[cfg(target_os = "linux")]

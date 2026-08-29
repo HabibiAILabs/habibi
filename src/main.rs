@@ -10,7 +10,9 @@ mod model;
 mod process;
 mod reactor;
 mod scanner;
+mod search;
 mod store;
+mod studio;
 mod tool;
 mod web;
 
@@ -24,6 +26,7 @@ use installer::{ExtensionInstaller, SourceOptions};
 use model::{ModelClient, ModelConfig};
 use reactor::Reactor;
 use store::EventStore;
+use studio::StudioService;
 use tool::ToolRuntime;
 use web::WebState;
 
@@ -90,6 +93,13 @@ async fn main() -> Result<()> {
     let model = ModelClient::new(ModelConfig::from_env()?, catalog)?;
     let store = EventStore::open(&database_path)?.shared();
     let extensions = Arc::new(ExtensionManager::load(&extensions_path, store.clone())?);
+    let studio = Arc::new(StudioService::from_env()?);
+    let extensions_root = extensions_path.canonicalize()?;
+    if studio.root_path().starts_with(&extensions_root)
+        || extensions_root.starts_with(studio.root_path())
+    {
+        bail!("extension drafts and installed extensions must use separate directories");
+    }
     let tools = Arc::new(ToolRuntime::new(store.clone(), extensions.clone())?);
     let reactor = Arc::new(Reactor::new(store.clone(), model, tools));
     reactor.record_runtime_started()?;
@@ -98,9 +108,13 @@ async fn main() -> Result<()> {
         reactor,
         store,
         extensions_dir: extensions_path.clone(),
+        studio,
+        local_admin: bind_address
+            .parse::<std::net::SocketAddr>()
+            .is_ok_and(|address| address.ip().is_loopback()),
         reaction_lock: Arc::new(tokio::sync::Mutex::new(())),
     };
-    let app = web::router(state);
+    let app = web::router(state.clone());
 
     let listener = tokio::net::TcpListener::bind(&bind_address)
         .await
@@ -108,6 +122,7 @@ async fn main() -> Result<()> {
     println!("Habibi — one continuous event stream");
     println!("Event store: {database_path}");
     println!("Extensions: {}", extensions_path.display());
+    println!("Extension drafts: {}", state.studio.root_path().display());
     println!("Web: http://{bind_address}");
 
     axum::serve(listener, app)
