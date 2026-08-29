@@ -979,6 +979,11 @@ pub struct ExtensionSummary {
 
 fn create_search_api(lua: &Lua, host: SearchHost) -> mlua::Result<mlua::Table> {
     let api = lua.create_table()?;
+    let configured = host.configured();
+    api.set(
+        "configured",
+        lua.create_function(move |_, ()| Ok(configured))?,
+    )?;
     api.set(
         "search",
         lua.create_function(move |lua, request: LuaValue| {

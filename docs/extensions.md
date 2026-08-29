@@ -306,7 +306,9 @@ not generic HTTP. Configure `HABIBI_SEARCH_PROVIDER=brave` with `HABIBI_BRAVE_SE
 `searxng` with one exact `HABIBI_SEARXNG_URL`. SearXNG accepts HTTPS or explicitly configured
 loopback HTTP. Redirects are rejected; requests time out after 10 seconds; responses are capped at
 1 MiB; result counts, titles, snippets, and URLs are bounded; only HTTP(S) citation URLs survive.
-Provider credentials are injected by core and never enter Lua, browser code, events, or logs.
+Provider credentials are injected by core and never enter Lua, browser code, events, or logs. An
+unconfigured search host reports `configured() == false`; official Web Search then registers no model
+tool until Habibi is reloaded with provider settings.
 
 Search queries and normalized results do enter durable action/model history and are disclosed to the
 configured provider. Snippets are untrusted third-party input and are not a license to republish page

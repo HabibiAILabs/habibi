@@ -663,6 +663,7 @@ enum ToolCandidateOrigin {
 struct DiscoveredTool {
     result_event_id: Uuid,
     advertised: bool,
+    pruned_recorded: bool,
 }
 
 #[derive(Debug, Default, serde::Serialize)]
@@ -754,9 +755,11 @@ impl ToolChainState {
         for (name, discovery) in &mut self.discovered {
             if !discovery.advertised {
                 discovery.advertised = true;
-            } else if !self.used.contains(name)
+            } else if !discovery.pruned_recorded
+                && !self.used.contains(name)
                 && !records.iter().any(|record| record.tool == *name)
             {
+                discovery.pruned_recorded = true;
                 records.push(ToolSurfaceRecord {
                     tool: name.clone(),
                     origin: ToolCandidateOrigin::ToolSearch {
@@ -803,6 +806,7 @@ impl ToolChainState {
                             DiscoveredTool {
                                 result_event_id: result.result_event_id,
                                 advertised: false,
+                                pruned_recorded: false,
                             },
                         );
                     }
@@ -877,6 +881,7 @@ mod tests {
             DiscoveredTool {
                 result_event_id: Uuid::now_v7(),
                 advertised: false,
+                pruned_recorded: false,
             },
         );
         let first = chain.prepare_surface(&catalog).unwrap();
@@ -894,6 +899,10 @@ mod tests {
                 .any(|definition| definition.name == "habibi.events.get")
         );
         assert!(second.records.iter().any(|record| {
+            record.tool == "habibi.events.get" && record.decision == "pruned_unused"
+        }));
+        let third = chain.prepare_surface(&catalog).unwrap();
+        assert!(!third.records.iter().any(|record| {
             record.tool == "habibi.events.get" && record.decision == "pruned_unused"
         }));
     }

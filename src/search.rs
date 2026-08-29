@@ -110,6 +110,10 @@ impl SearchHost {
         })
     }
 
+    pub fn configured(&self) -> bool {
+        !matches!(self.provider.as_ref(), SearchProvider::Unconfigured { .. })
+    }
+
     pub fn begin_action(&self) -> Result<SearchActionGuard> {
         if self.action_enabled.swap(true, Ordering::AcqRel) {
             bail!("web search action context is already active");
