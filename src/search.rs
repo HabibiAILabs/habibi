@@ -63,6 +63,9 @@ pub enum Freshness {
 pub struct SearchResponse {
     pub query: String,
     pub provider: &'static str,
+    pub provider_status: &'static str,
+    pub retryable: bool,
+    pub provider_errors: Vec<String>,
     pub searched_at: String,
     pub results: Vec<SearchResult>,
 }
@@ -136,15 +139,17 @@ impl SearchHost {
             bail!("web search count must be between 1 and 10");
         }
         let client = search_client()?;
-        let (provider, values) = match self.provider.as_ref() {
+        let (provider, values, provider_errors) = match self.provider.as_ref() {
             SearchProvider::Brave { api_key } => (
                 "brave",
                 self.search_brave(&client, query, count, &request.freshness, api_key)?,
+                Vec::new(),
             ),
-            SearchProvider::Searxng { endpoint } => (
-                "searxng",
-                self.search_searxng(&client, query, count, &request.freshness, endpoint)?,
-            ),
+            SearchProvider::Searxng { endpoint } => {
+                let (values, errors) =
+                    self.search_searxng(&client, query, count, &request.freshness, endpoint)?;
+                ("searxng", values, errors)
+            }
             SearchProvider::Unconfigured { message } => bail!("{message}"),
         };
         let mut results = Vec::new();
@@ -154,9 +159,19 @@ impl SearchHost {
             };
             results.push(result);
         }
+        let provider_status = if provider_errors.is_empty() {
+            "ok"
+        } else if results.is_empty() {
+            "unavailable"
+        } else {
+            "degraded"
+        };
         Ok(SearchResponse {
             query: query.to_owned(),
             provider,
+            provider_status,
+            retryable: provider_status != "unavailable",
+            provider_errors,
             searched_at: Utc::now().to_rfc3339(),
             results,
         })
@@ -199,7 +214,7 @@ impl SearchHost {
         count: usize,
         freshness: &Freshness,
         endpoint: &Url,
-    ) -> Result<Vec<Value>> {
+    ) -> Result<(Vec<Value>, Vec<String>)> {
         let mut parameters = vec![
             ("q", query.to_owned()),
             ("format", "json".to_owned()),
@@ -214,11 +229,29 @@ impl SearchHost {
             .send()
             .map_err(|_| anyhow::anyhow!("SearXNG request failed"))?;
         let body = bounded_json(response, "SearXNG")?;
-        Ok(body
+        let results = body
             .get("results")
             .and_then(Value::as_array)
             .map(|results| results.iter().take(count).cloned().collect())
-            .unwrap_or_default())
+            .unwrap_or_default();
+        let errors = body
+            .get("unresponsive_engines")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .take(10)
+            .filter_map(|entry| {
+                let pair = entry.as_array()?;
+                let engine = pair.first()?.as_str()?;
+                let reason = pair.get(1)?.as_str()?;
+                Some(format!(
+                    "{}: {}",
+                    provider_message(engine, 100),
+                    provider_message(reason, 200)
+                ))
+            })
+            .collect();
+        Ok((results, errors))
     }
 }
 
@@ -337,6 +370,23 @@ fn bounded(value: &str, characters: usize) -> String {
     value.chars().take(characters).collect()
 }
 
+fn provider_message(value: &str, characters: usize) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .take(characters)
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,7 +432,49 @@ mod tests {
         let _guard = host.begin_action().unwrap();
         let response = host.search(request()).unwrap();
         assert_eq!(response.provider, "searxng");
+        assert_eq!(response.provider_status, "ok");
+        assert!(response.retryable);
+        assert!(response.provider_errors.is_empty());
         assert_eq!(response.results[0].url, "https://example.com/");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn forwards_searxng_engine_suspensions_as_non_retryable() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 2048];
+            let _ = stream.read(&mut request).unwrap();
+            let body = r#"{"results":[],"unresponsive_engines":[["brave","Suspended: account suspended"],["google","Suspended: CAPTCHA"]]}"#;
+            use std::io::Write;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+        let host = test_host(Url::parse(&format!("http://{address}/search")).unwrap());
+        let _guard = host.begin_action().unwrap();
+        let response = host
+            .search(SearchRequest {
+                query: "public query".into(),
+                count: Some(5),
+                freshness: Freshness::Any,
+            })
+            .unwrap();
+        assert_eq!(response.provider_status, "unavailable");
+        assert!(!response.retryable);
+        assert_eq!(
+            response.provider_errors,
+            [
+                "brave: Suspended: account suspended",
+                "google: Suspended: CAPTCHA"
+            ]
+        );
         server.join().unwrap();
     }
 
