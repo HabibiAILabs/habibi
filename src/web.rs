@@ -1,4 +1,8 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::PathBuf,
+    sync::Arc,
+};
 
 use anyhow::Context;
 use axum::{
@@ -13,6 +17,9 @@ use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
+
+#[cfg(target_os = "linux")]
+use crate::process::normalize_executable_grants;
 
 use crate::{
     event::Event,
@@ -376,7 +383,10 @@ async fn toggle_extension(
 
 #[derive(Deserialize)]
 struct ExtensionGrantsUpdate {
+    #[serde(default)]
     filesystem_roots: Vec<String>,
+    #[serde(default)]
+    process_executables: BTreeMap<String, String>,
 }
 
 async fn extension_grants(
@@ -389,22 +399,34 @@ async fn extension_grants(
             json!({ "error": "extension not found" }),
         );
     };
-    if !extension.manifest.capabilities.filesystem {
+    if !extension.manifest.capabilities.filesystem && !extension.manifest.capabilities.process {
         return json_response(
             StatusCode::BAD_REQUEST,
-            json!({ "error": "extension does not request filesystem access" }),
+            json!({ "error": "extension does not request managed grants" }),
         );
     }
     match state
         .store
         .lock()
         .map_err(|_| anyhow::anyhow!("event store lock poisoned"))
-        .and_then(|store| store.extension_filesystem_roots(&extension_id))
     {
-        Ok(filesystem_roots) => json_response(
-            StatusCode::OK,
-            json!({ "filesystem_roots": filesystem_roots }),
-        ),
+        Ok(store) => {
+            let filesystem_roots = store.extension_filesystem_roots(&extension_id);
+            let process_executables = store.extension_process_executables(&extension_id);
+            match (filesystem_roots, process_executables) {
+                (Ok(filesystem_roots), Ok(process_executables)) => json_response(
+                    StatusCode::OK,
+                    json!({
+                        "filesystem_roots": filesystem_roots,
+                        "process_executables": process_executables
+                    }),
+                ),
+                (Err(error), _) | (_, Err(error)) => json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({ "error": error.to_string() }),
+                ),
+            }
+        }
         Err(error) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": error.to_string() }),
@@ -424,37 +446,74 @@ async fn update_extension_grants(
             json!({ "error": "extension not found" }),
         );
     };
-    if !extension.manifest.capabilities.filesystem {
+    if !extension.manifest.capabilities.filesystem && !extension.manifest.capabilities.process {
         return json_response(
             StatusCode::BAD_REQUEST,
-            json!({ "error": "extension does not request filesystem access" }),
+            json!({ "error": "extension does not request managed grants" }),
         );
     }
-    let normalized =
-        match tokio::task::spawn_blocking(move || normalize_grant_roots(&update.filesystem_roots))
-            .await
-        {
-            Ok(Ok(roots)) => roots,
-            Ok(Err(error)) => {
-                return json_response(
-                    StatusCode::BAD_REQUEST,
-                    json!({ "error": error.to_string() }),
-                );
-            }
-            Err(error) => {
-                return json_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    json!({ "error": error.to_string() }),
-                );
-            }
+    let filesystem_enabled = extension.manifest.capabilities.filesystem;
+    let process_enabled = extension.manifest.capabilities.process;
+    #[cfg(not(target_os = "linux"))]
+    if process_enabled {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "process capability is supported only on Linux" }),
+        );
+    }
+    let normalized = match tokio::task::spawn_blocking(move || {
+        let roots = if filesystem_enabled {
+            normalize_grant_roots(&update.filesystem_roots)?
+        } else {
+            Vec::new()
         };
+        #[cfg(target_os = "linux")]
+        let executables = if process_enabled {
+            normalize_executable_grants(&update.process_executables)?
+        } else {
+            Vec::new()
+        };
+        #[cfg(not(target_os = "linux"))]
+        let executables = Vec::new();
+        Ok::<_, anyhow::Error>((roots, executables))
+    })
+    .await
+    {
+        Ok(Ok(roots)) => roots,
+        Ok(Err(error)) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": error.to_string() }),
+            );
+        }
+        Err(error) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": error.to_string() }),
+            );
+        }
+    };
+    let (filesystem_roots, process_executables) = normalized;
     match state
         .store
         .lock()
         .map_err(|_| anyhow::anyhow!("event store lock poisoned"))
-        .and_then(|store| store.set_extension_filesystem_roots(&extension_id, &normalized))
-    {
-        Ok(()) => json_response(StatusCode::OK, json!({ "filesystem_roots": normalized })),
+        .and_then(|mut store| {
+            if filesystem_enabled {
+                store.set_extension_filesystem_roots(&extension_id, &filesystem_roots)?;
+            }
+            if process_enabled {
+                store.set_extension_process_executables(&extension_id, &process_executables)?;
+            }
+            Ok(())
+        }) {
+        Ok(()) => json_response(
+            StatusCode::OK,
+            json!({
+                "filesystem_roots": filesystem_roots,
+                "process_executables": process_executables
+            }),
+        ),
         Err(error) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": error.to_string() }),

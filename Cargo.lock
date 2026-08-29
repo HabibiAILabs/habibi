@@ -511,6 +511,7 @@ dependencies = [
  "dotenvy",
  "fs2",
  "futures",
+ "libc",
  "mime_guess",
  "mlua",
  "reqwest",

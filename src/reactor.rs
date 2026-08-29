@@ -477,13 +477,13 @@ impl Reactor {
             let (output, result_event, level, log_payload) = match execution {
                 Ok(execution) => {
                     let mut effect_ids = Vec::new();
-                    for draft in execution.host_events {
+                    for host_effect in execution.host_events {
                         let effect = Event::new(
-                            draft.event_type,
-                            "host:filesystem",
+                            host_effect.event.event_type,
+                            host_effect.source,
                             root_trigger.correlation_id,
                             Some(requested.id),
-                            draft.payload,
+                            host_effect.event.payload,
                         );
                         self.append(&effect)?;
                         effect_ids.push(effect.id);
@@ -826,6 +826,9 @@ fn validate_effect_namespace(tool_name: &str, event_type: &str) -> Result<()> {
     if event_type.starts_with("workspace.") {
         anyhow::bail!("workspace effect events can only be emitted by the filesystem host");
     }
+    if event_type.starts_with("process.") {
+        anyhow::bail!("process effect events can only be emitted by the process host");
+    }
     if tool_name.starts_with("habibi.") {
         return Ok(());
     }
@@ -840,6 +843,16 @@ fn validate_effect_namespace(tool_name: &str, event_type: &str) -> Result<()> {
 mod tests {
     use super::*;
     use crate::{extension::ExtensionManager, store::EventStore};
+
+    #[test]
+    fn rejects_lua_authored_process_effects() {
+        assert!(
+            validate_effect_namespace("process.run", "process.execution.completed")
+                .unwrap_err()
+                .to_string()
+                .contains("process host")
+        );
+    }
 
     #[test]
     fn rejects_lua_authored_workspace_effects() {

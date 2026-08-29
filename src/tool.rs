@@ -37,6 +37,12 @@ pub struct ToolContext {
     pub correlation_id: Uuid,
 }
 
+#[derive(Debug, Clone)]
+pub struct HostEffect {
+    pub source: &'static str,
+    pub event: EventDraft,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ToolExecution {
     #[serde(default)]
@@ -44,7 +50,7 @@ pub struct ToolExecution {
     #[serde(default)]
     pub events: Vec<EventDraft>,
     #[serde(skip)]
-    pub host_events: Vec<EventDraft>,
+    pub host_events: Vec<HostEffect>,
     #[serde(skip)]
     pub failure: Option<String>,
 }

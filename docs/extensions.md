@@ -45,6 +45,7 @@ events = true
 tools = true
 context = true
 filesystem = true
+process = true
 
 [web]
 static_dir = "web"
@@ -243,6 +244,39 @@ payloads contain paths, hashes, and sizes, never file contents or patch text. Ac
 action results, and exact model logs still retain tool arguments/results under Habibi's existing
 observability policy; filesystem grants are therefore a scope boundary, not a secret-content
 redaction feature.
+
+## Sandboxed process execution
+
+The Linux-only `process` capability exposes `habibi.process.run` only while a registered tool handler
+is executing. Initialization, routes, context hooks, and suggestion hooks cannot run processes. The
+extension must have both an exact executable grant and a filesystem root containing the requested
+working directory.
+
+```lua
+local outcome = habibi.process.run({
+  executable = "git",
+  args = habibi.array({ "status", "--porcelain=v1" }),
+  cwd = "/home/user/project",
+  timeout_ms = 30000
+})
+```
+
+Users configure executable aliases on the Extensions page. Grants accept only canonical executable
+native ELF files, store device/inode identity and SHA-256, and are verified on every invocation. The
+verified bytes are copied into a sealed memory file before launch. There is no executable path
+lookup, implicit shell evaluation, script/shebang support, caller environment, stdin, detached mode,
+or network. Explicitly granting a native interpreter grants its normal argv authority.
+Arguments are literal argv entries, limited to 128 entries and 64 KiB total.
+
+Each run uses Bubblewrap namespaces and a delegated cgroup v2 leaf. The sandbox receives a minimal
+runtime filesystem plus one selected filesystem grant mounted read-write. Stdout and stderr are
+drained concurrently and capped at 1 MiB each. Timeout defaults to 30 seconds and is capped at 120
+seconds. Completion, timeout, and output overflow kill the whole cgroup. Execution fails closed when
+Bubblewrap or delegated cgroup v2 is unavailable.
+
+Core emits a host-authored `process.execution.completed` effect with executable alias/hash, cwd,
+outcome, duration, exit status, and byte counts—never argv or output. Tool arguments, returned output,
+action results, and exact model logs remain durable. Do not use process tools for secrets.
 
 ## JSON arrays
 

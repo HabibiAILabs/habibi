@@ -6,6 +6,8 @@ mod extension;
 mod filesystem;
 mod installer;
 mod model;
+#[cfg(target_os = "linux")]
+mod process;
 mod reactor;
 mod scanner;
 mod store;

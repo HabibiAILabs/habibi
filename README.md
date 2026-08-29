@@ -83,12 +83,13 @@ Then open `http://127.0.0.1:8787`. The home page presents Habibi itself; extensi
 and enable/disable controls live at `/extensions`. Domain history is at `/events`; detailed
 operational execution is at `/logs`; token, cache, and estimated-cost totals are at `/stats`.
 
-Extensions are installed separately from the core runtime. Install the official Chat and Workspace
-extensions from GitHub, then start Habibi:
+Extensions are installed separately from the core runtime. Install the official Chat, Workspace,
+and Linux Process extensions from GitHub, then start Habibi:
 
 ```sh
 mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir chat
 mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir workspace
+mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir process
 mise exec -- cargo run
 ```
 
@@ -97,6 +98,7 @@ You can also install a local checkout:
 ```sh
 mise exec -- cargo run -- install ../habibi-extensions --subdir chat
 mise exec -- cargo run -- install ../habibi-extensions --subdir workspace
+mise exec -- cargo run -- install ../habibi-extensions --subdir process
 ```
 
 Installed extensions retain source, revision, semantic version, content hash, capabilities, and
@@ -172,6 +174,14 @@ reads, literal search, checked atomic writes and patches, one-level directory cr
 moves, and nonrecursive deletion. Configure granted roots on `/extensions`; no grant means no
 filesystem access. Tool search advertises Workspace definitions only when they are relevant.
 
+## Process extension
+
+The Linux-only Process extension runs exact user-granted native executables without implicit shell
+evaluation. Each invocation verifies the executable hash, executes sealed bytes inside Bubblewrap namespaces, removes
+network and ambient environment access, exposes one granted filesystem root, bounds output/time, and
+kills the complete delegated cgroup afterward. Configure both root and executable grants on
+`/extensions`. Arguments and returned output are durable; never use process tools for secrets.
+
 See [`docs/extensions.md`](docs/extensions.md) for the extension contract and host API guarantees.
 
 ## Test
@@ -207,6 +217,7 @@ The filesystem host owns:
 - `workspace.directory.created`
 - `workspace.directory.deleted`
 - `workspace.entry.moved`
+- `process.execution.completed`
 
 SQLite's `events.sequence` is canonical domain-event order. Logs have an independent operational
 sequence. Timestamps are informational.

@@ -73,6 +73,14 @@ pub struct ExtensionInstaller {
     extensions_dir: PathBuf,
 }
 
+struct OperationLock(File);
+
+impl Drop for OperationLock {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.0);
+    }
+}
+
 struct PreparedPackage {
     _checkout: Option<TempDir>,
     package_root: PathBuf,
@@ -165,7 +173,7 @@ impl ExtensionInstaller {
         })
     }
 
-    fn operation_lock(&self) -> Result<File> {
+    fn operation_lock(&self) -> Result<OperationLock> {
         fs::create_dir_all(&self.extensions_dir)?;
         let file = OpenOptions::new()
             .create(true)
@@ -175,7 +183,7 @@ impl ExtensionInstaller {
             .open(self.extensions_dir.join(".habibi-install.lock"))?;
         file.try_lock_exclusive()
             .context("another extension installation or update is already running")?;
-        Ok(file)
+        Ok(OperationLock(file))
     }
 
     pub fn metadata(&self, extension_id: &str) -> Result<InstallMetadata> {

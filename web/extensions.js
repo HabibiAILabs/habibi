@@ -54,6 +54,9 @@ function extensionCard(extension) {
   if (extension.capabilities.filesystem) {
     details.append(filesystemGrants(extension));
   }
+  if (extension.capabilities.process) {
+    details.append(processGrants(extension));
+  }
 
   const actions = document.createElement("div");
   actions.className = "extension-actions";
@@ -152,10 +155,14 @@ function filesystemGrants(extension) {
     status.textContent = "Saving…";
     try {
       const filesystemRoots = roots.value.split("\n").map((root) => root.trim()).filter(Boolean);
+      const current = await api(`/api/extensions/${encodeURIComponent(extension.id)}/grants`);
       const response = await fetch(`/api/extensions/${encodeURIComponent(extension.id)}/grants`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ filesystem_roots: filesystemRoots }),
+        body: JSON.stringify({
+          filesystem_roots: filesystemRoots,
+          process_executables: Object.fromEntries(current.process_executables.map((grant) => [grant.alias, grant.path])),
+        }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || `Grant update failed (${response.status})`);
@@ -168,6 +175,57 @@ function filesystemGrants(extension) {
     }
   };
   section.append(label, help, roots, save, status);
+  return section;
+}
+
+function processGrants(extension) {
+  const section = document.createElement("section");
+  section.className = "grant-editor";
+  const label = document.createElement("label");
+  label.htmlFor = `process-executables-${extension.id}`;
+  label.textContent = "Granted process executables";
+  const help = document.createElement("small");
+  help.textContent = "Linux only. One alias=/absolute/native/executable per line. Runs have no network and can access only this extension’s filesystem roots.";
+  const executables = document.createElement("textarea");
+  executables.id = `process-executables-${extension.id}`;
+  executables.rows = 3;
+  executables.spellcheck = false;
+  executables.placeholder = "git=/usr/bin/git";
+  executables.value = extension.process_executables.map((grant) => `${grant.alias}=${grant.path}`).join("\n");
+  const status = document.createElement("small");
+  status.className = "grant-status";
+  const save = document.createElement("button");
+  save.className = "secondary";
+  save.type = "button";
+  save.textContent = "Save executable grants";
+  save.onclick = async () => {
+    save.disabled = true;
+    status.textContent = "Saving…";
+    try {
+      const processExecutables = Object.fromEntries(
+        executables.value.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => {
+          const separator = line.indexOf("=");
+          if (separator < 1) throw new Error("Each executable must use alias=/absolute/path");
+          return [line.slice(0, separator).trim(), line.slice(separator + 1).trim()];
+        }),
+      );
+      const current = await api(`/api/extensions/${encodeURIComponent(extension.id)}/grants`);
+      const response = await fetch(`/api/extensions/${encodeURIComponent(extension.id)}/grants`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ filesystem_roots: current.filesystem_roots, process_executables: processExecutables }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `Grant update failed (${response.status})`);
+      executables.value = result.process_executables.map((grant) => `${grant.alias}=${grant.path}`).join("\n");
+      status.textContent = `Saved ${result.process_executables.length} executable grant${result.process_executables.length === 1 ? "" : "s"}.`;
+    } catch (error) {
+      status.textContent = error.message;
+    } finally {
+      save.disabled = false;
+    }
+  };
+  section.append(label, help, executables, save, status);
   return section;
 }
 

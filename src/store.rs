@@ -111,6 +111,14 @@ struct FilesystemRootGrant {
     identity: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ProcessExecutableGrant {
+    pub alias: String,
+    pub path: String,
+    pub identity: Option<String>,
+    pub sha256: String,
+}
+
 #[cfg(unix)]
 fn filesystem_identity(metadata: &std::fs::Metadata) -> Option<String> {
     use std::os::unix::fs::MetadataExt;
@@ -186,6 +194,12 @@ impl EventStore {
                  extension_id     TEXT PRIMARY KEY,
                  filesystem_roots TEXT NOT NULL,
                  updated_at       TEXT NOT NULL
+             );
+
+             CREATE TABLE IF NOT EXISTS extension_process_grants (
+                 extension_id TEXT PRIMARY KEY,
+                 executables  TEXT NOT NULL,
+                 updated_at   TEXT NOT NULL
              );
 
              CREATE TABLE IF NOT EXISTS event_links (
@@ -849,6 +863,43 @@ impl EventStore {
                 Ok(grant.path)
             })
             .collect()
+    }
+
+    pub fn extension_process_executables(
+        &self,
+        extension_id: &str,
+    ) -> Result<Vec<ProcessExecutableGrant>> {
+        let grants = self
+            .connection
+            .query_row(
+                "SELECT executables FROM extension_process_grants WHERE extension_id = ?1",
+                [extension_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        grants
+            .map(|grants| serde_json::from_str(&grants).map_err(Into::into))
+            .unwrap_or_else(|| Ok(Vec::new()))
+    }
+
+    pub fn set_extension_process_executables(
+        &mut self,
+        extension_id: &str,
+        grants: &[ProcessExecutableGrant],
+    ) -> Result<()> {
+        self.connection.execute(
+            "INSERT INTO extension_process_grants (extension_id, executables, updated_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(extension_id) DO UPDATE SET
+                 executables = excluded.executables,
+                 updated_at = excluded.updated_at",
+            params![
+                extension_id,
+                serde_json::to_string(grants)?,
+                Utc::now().to_rfc3339()
+            ],
+        )?;
+        Ok(())
     }
 
     pub fn set_extension_filesystem_roots(

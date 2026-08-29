@@ -31,6 +31,21 @@ all reads/searches, serialize mutations, require hashes for existing-file change
 replacement. Grants reduce accidental scope; they do not make a fully trusted extension hostile-code
 safe. File contents and patch arguments remain present in durable action events and exact model logs.
 
+## Process execution
+
+Process execution is Linux-only and default-deny. Users grant exact native executable aliases and
+filesystem roots independently. Habibi verifies executable identity and SHA-256, executes sealed
+verified bytes without a shell, clears the environment, disables network access, bounds arguments,
+time, and output, and kills the complete delegated cgroup after every run. The API is available only
+during registered tool actions and fails closed without Bubblewrap or delegated cgroup v2 support.
+
+The selected filesystem root is mounted read-write inside the sandbox; process writes do not receive
+Workspace's per-file hash checks. System runtime libraries under `/usr` and `/lib*`, plus Bubblewrap
+itself, are trusted platform dependencies and are not pinned by the executable grant. Explicitly
+granting a native interpreter grants its normal argv authority. Arguments and returned stdout/stderr
+become durable action/model history. Never pass credentials or other secrets through process tools.
+The host-authored process effect omits argv, environment, stdout, and stderr.
+
 ## Reporting vulnerabilities
 
 Please use GitHub private vulnerability reporting for the affected repository when available. Do not include access tokens, OAuth credentials, private event data, or database contents in a public issue.
