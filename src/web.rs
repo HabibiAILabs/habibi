@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::PathBuf,
     sync::Arc,
 };
@@ -51,6 +51,7 @@ pub fn router(state: WebState) -> Router {
         .route("/extensions", get(extensions_page))
         .route("/events", get(events_page))
         .route("/logs", get(logs_page))
+        .route("/trace", get(trace_page))
         .route("/stats", get(stats_page))
         .route("/studio", get(studio_page))
         .route("/assets/habibi-logo.svg", get(logo_asset))
@@ -58,11 +59,13 @@ pub fn router(state: WebState) -> Router {
         .route("/assets/extensions.js", get(extensions_js_asset))
         .route("/assets/events.js", get(events_js_asset))
         .route("/assets/logs.js", get(logs_js_asset))
+        .route("/assets/trace.js", get(trace_js_asset))
         .route("/assets/markdown.js", get(markdown_js_asset))
         .route("/assets/stats.js", get(stats_js_asset))
         .route("/assets/studio.js", get(studio_js_asset))
         .route("/api/events", get(list_events))
         .route("/api/logs", get(list_logs))
+        .route("/api/trace", get(trace))
         .route("/api/stats", get(stats))
         .route("/api/models", get(models))
         .route("/api/models/refresh", post(refresh_models))
@@ -121,6 +124,10 @@ async fn logs_page() -> Response {
     html_response(include_str!("../web/logs.html"))
 }
 
+async fn trace_page() -> Response {
+    html_response(include_str!("../web/trace.html"))
+}
+
 async fn stats_page() -> Response {
     html_response(include_str!("../web/stats.html"))
 }
@@ -162,6 +169,13 @@ async fn logs_js_asset() -> Response {
     asset_response(
         "text/javascript; charset=utf-8",
         include_bytes!("../web/logs.js"),
+    )
+}
+
+async fn trace_js_asset() -> Response {
+    asset_response(
+        "text/javascript; charset=utf-8",
+        include_bytes!("../web/trace.js"),
     )
 }
 
@@ -211,6 +225,136 @@ async fn list_events(State(state): State<WebState>, Query(query): Query<EventsQu
             json!({ "error": error.to_string() }),
         ),
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct TraceQuery {
+    event_id: Option<String>,
+    correlation_id: Option<String>,
+}
+
+async fn trace(State(state): State<WebState>, Query(query): Query<TraceQuery>) -> Response {
+    let result = (|| {
+        let locked = state
+            .store
+            .lock()
+            .map_err(|_| anyhow::anyhow!("event store lock poisoned"))?;
+        let focus = query.event_id.as_deref().map(Uuid::parse_str).transpose()?;
+        let correlation = if let Some(event_id) = focus {
+            locked
+                .get_event(Some(&event_id.to_string()), None)?
+                .ok_or_else(|| anyhow::anyhow!("event '{event_id}' does not exist"))?
+                .event
+                .correlation_id
+        } else if let Some(correlation_id) = query.correlation_id.as_deref() {
+            Uuid::parse_str(correlation_id)?
+        } else {
+            anyhow::bail!("event_id or correlation_id is required");
+        };
+        let mut events = locked.query_events(&StoreEventQuery {
+            correlation_id: Some(correlation),
+            limit: 1_001,
+            ..StoreEventQuery::default()
+        })?;
+        let events_truncated = events.len() > 1_000;
+        if events_truncated {
+            events.remove(0);
+        }
+        if events.is_empty() {
+            anyhow::bail!("correlation '{correlation}' has no events");
+        }
+        let mut logs = locked.query_logs(&StoreLogQuery {
+            correlation_id: Some(correlation),
+            limit: 2_001,
+            ..StoreLogQuery::default()
+        })?;
+        let logs_truncated = logs.len() > 2_000;
+        if logs_truncated {
+            logs.remove(0);
+        }
+        Ok(build_trace_response(
+            focus,
+            correlation,
+            events,
+            logs,
+            events_truncated || logs_truncated,
+        ))
+    })();
+    match result {
+        Ok(trace) => json_response(StatusCode::OK, trace),
+        Err(error) => json_response(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": error.to_string() }),
+        ),
+    }
+}
+
+fn build_trace_response(
+    focus: Option<Uuid>,
+    correlation: Uuid,
+    events: Vec<crate::event::StoredEvent>,
+    logs: Vec<crate::event::StoredLog>,
+    truncated: bool,
+) -> Value {
+    let parents = events
+        .iter()
+        .map(|stored| (stored.event.id, stored.event.causation_id))
+        .collect::<HashMap<_, _>>();
+    let roots = parents
+        .keys()
+        .map(|id| event_root(*id, &parents))
+        .collect::<BTreeSet<_>>();
+    let mut children = HashMap::<Uuid, Vec<Uuid>>::new();
+    for stored in &events {
+        if let Some(parent) = stored.event.causation_id {
+            children.entry(parent).or_default().push(stored.event.id);
+        }
+    }
+    let enriched_events = events
+        .into_iter()
+        .map(|stored| {
+            let id = stored.event.id;
+            json!({
+                "record": stored,
+                "root_event_id": event_root(id, &parents),
+                "caused_event_ids": children.remove(&id).unwrap_or_default(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let enriched_logs = logs
+        .into_iter()
+        .map(|stored| {
+            let root = stored
+                .log
+                .trigger_event_id
+                .filter(|id| parents.contains_key(id))
+                .map(|id| event_root(id, &parents));
+            json!({ "record": stored, "root_event_id": root })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "focus_event_id": focus,
+        "correlation_id": correlation,
+        "root_event_ids": roots,
+        "truncated": truncated,
+        "events": enriched_events,
+        "logs": enriched_logs,
+    })
+}
+
+fn event_root(event_id: Uuid, parents: &HashMap<Uuid, Option<Uuid>>) -> Uuid {
+    let mut current = event_id;
+    let mut visited = HashSet::new();
+    while visited.insert(current) {
+        let Some(Some(parent)) = parents.get(&current) else {
+            break;
+        };
+        if !parents.contains_key(parent) {
+            break;
+        }
+        current = *parent;
+    }
+    current
 }
 
 fn build_event_query(query: EventsQuery) -> anyhow::Result<StoreEventQuery> {
@@ -1145,4 +1289,37 @@ fn json_response(status: StatusCode, value: Value) -> Response {
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(serde_json::to_vec(&value).unwrap_or_default()))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::StoredEvent;
+
+    #[test]
+    fn trace_reports_each_events_causal_root_and_children() {
+        let correlation = Uuid::now_v7();
+        let root = Event::new("test.root", "test", correlation, None, json!({}));
+        let child = Event::new("test.child", "test", correlation, Some(root.id), json!({}));
+        let response = build_trace_response(
+            Some(child.id),
+            correlation,
+            vec![
+                StoredEvent {
+                    sequence: 1,
+                    event: root.clone(),
+                },
+                StoredEvent {
+                    sequence: 2,
+                    event: child.clone(),
+                },
+            ],
+            Vec::new(),
+            false,
+        );
+        assert_eq!(response["root_event_ids"], json!([root.id]));
+        assert_eq!(response["events"][1]["root_event_id"], json!(root.id));
+        assert_eq!(response["events"][0]["caused_event_ids"], json!([child.id]));
+        assert_eq!(response["truncated"], false);
+    }
 }

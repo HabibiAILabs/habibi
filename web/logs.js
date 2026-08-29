@@ -81,6 +81,7 @@ function logCard(log) {
 
   const links = document.createElement("nav");
   links.className = "record-links";
+  links.append(recordLink("Open trace", `/trace?correlation_id=${encodeURIComponent(log.correlation_id)}`));
   if (log.trigger_event_id) {
     links.append(recordLink("Trigger event", `/events?event_id=${encodeURIComponent(log.trigger_event_id)}`));
   }

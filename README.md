@@ -80,8 +80,8 @@ mise exec -- cargo run
 ```
 
 Then open `http://127.0.0.1:8787`. The home page presents Habibi itself; extension discovery
-and enable/disable controls live at `/extensions`. Domain history is at `/events`; detailed
-operational execution is at `/logs`; token, cache, and estimated-cost totals are at `/stats`.
+and enable/disable controls live at `/extensions`. The interactive causal view is at `/trace`;
+domain history is at `/events`, operational execution at `/logs`, and usage totals at `/stats`.
 
 Extensions are installed separately from the core runtime. Install the official packages you need,
 then start Habibi:
@@ -140,6 +140,11 @@ logs include exact requests, native output items, parsed tool calls, token usage
 writes when reported by the provider, and per-invocation cost estimates when pricing is configured.
 The Logs UI adds structured request/response summaries, safe Markdown rendering for model text,
 and direct links between logs and their trigger events while preserving the complete raw payload.
+`GET /api/trace` accepts an `event_id` or `correlation_id` and returns a bounded joined trace with
+each event's causal root and children plus correlated operational logs. `/trace` renders those two
+streams as an interactive H-shaped path with paired tool inputs/results, exact model inputs/outputs,
+and each compiled context. A `truncated` flag identifies chains beyond the 1,000-event or 2,000-log
+view bounds.
 `GET /api/stats` and `/stats` aggregate model usage globally and by model, plus tool advertisements,
 distinct chains, calls, outcomes, schema-token estimates, and execution duration. Pricing comes from
 `model-catalog.json`, selected by provider and model ID. The Stats page can refresh the catalog from

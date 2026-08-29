@@ -155,6 +155,10 @@ impl EventStore {
 
              CREATE INDEX IF NOT EXISTS events_by_type_sequence
                  ON events(event_type, sequence);
+             CREATE INDEX IF NOT EXISTS events_by_correlation_sequence
+                 ON events(correlation_id, sequence);
+             CREATE INDEX IF NOT EXISTS events_by_causation_sequence
+                 ON events(causation_id, sequence);
 
              CREATE TABLE IF NOT EXISTS logs (
                  sequence         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -175,6 +179,8 @@ impl EventStore {
              );
              CREATE INDEX IF NOT EXISTS logs_by_name_sequence ON logs(name, sequence);
              CREATE INDEX IF NOT EXISTS logs_by_reaction_sequence ON logs(reaction_id, sequence);
+             CREATE INDEX IF NOT EXISTS logs_by_correlation_sequence ON logs(correlation_id, sequence);
+             CREATE INDEX IF NOT EXISTS logs_by_trigger_sequence ON logs(trigger_event_id, sequence);
 
              CREATE TABLE IF NOT EXISTS extension_kv (
                  extension_id TEXT NOT NULL,

@@ -129,7 +129,73 @@ pre { max-height: 520px; overflow: auto; border-radius: 10px; padding: 14px; bac
 .studio-editor { min-height: 430px; resize: vertical; font: .84rem/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; tab-size: 2; }
 .studio-review { overflow-wrap: anywhere; }
 .studio-review pre { white-space: pre-wrap; font-size: .78rem; }
-@media (max-width: 1000px) { .studio-grid { grid-template-columns: 1fr; } .studio-editor { min-height: 320px; } }
+.trace-shell { width: min(1540px, calc(100% - 32px)); margin: 42px auto; }
+.trace-heading { margin-bottom: 24px; }
+.trace-search { display: grid; grid-template-columns: minmax(280px, 1fr) auto auto auto; align-items: end; gap: 10px; border: 1px solid var(--line); border-radius: 16px; padding: 14px; background: var(--panel); }
+.trace-search label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+.trace-search input[type="text"], .trace-search input:not([type]) { border: 1px solid var(--line); border-radius: 9px; padding: 10px; outline: 0; background: var(--bg); color: var(--text); }
+.trace-search button { border: 1px solid var(--line); cursor: pointer; }
+.trace-live { display: flex !important; grid-auto-flow: column; align-items: center; padding: 11px 6px; white-space: nowrap; }
+.trace-status { min-height: 20px; margin: 14px 2px; font-size: 13px; }
+.trace-status.error { color: #ff9b9b; }
+.trace-summary { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 14px; }
+.trace-summary-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: var(--panel); }
+.trace-summary-card span { display: block; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+.trace-summary-card strong { display: block; margin-top: 4px; font-size: 20px; }
+.trace-workspace { display: grid; grid-template-columns: minmax(580px, 1.55fr) minmax(390px, 1fr); align-items: start; gap: 14px; }
+.trace-map-panel, .trace-inspector { border: 1px solid var(--line); border-radius: 18px; background: color-mix(in srgb, var(--panel) 94%, transparent); }
+.trace-map-panel { min-height: 640px; overflow: hidden; }
+.trace-map-heading { display: grid; grid-template-columns: 1fr 1fr; gap: 72px; border-bottom: 1px solid var(--line); padding: 14px 22px; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+.trace-map-heading > div:last-child { text-align: right; }
+.trace-rail-key { display: inline-block; width: 8px; height: 8px; margin-right: 7px; border-radius: 50%; }
+.trace-rail-key.event { background: var(--green); }
+.trace-rail-key.operation { background: #78b6ff; }
+.trace-map { padding: 18px; }
+.trace-row { display: grid; grid-template-columns: minmax(0, 1fr) 58px minmax(0, 1fr); min-height: 72px; align-items: stretch; }
+.trace-junction { position: relative; }
+.trace-junction::before, .trace-junction::after { position: absolute; top: 0; bottom: 0; width: 2px; background: #253129; content: ""; }
+.trace-junction::before { left: 18px; }
+.trace-junction::after { right: 18px; }
+.trace-junction .trace-dot { position: absolute; z-index: 2; top: 50%; width: 12px; height: 12px; border: 3px solid var(--green); border-radius: 50%; background: var(--bg); transform: translateY(-50%); box-shadow: 0 0 14px #67d98255; }
+.trace-row.event .trace-dot { left: 13px; }
+.trace-row.log .trace-dot { right: 13px; border-color: #78b6ff; box-shadow: 0 0 14px #78b6ff44; }
+.trace-row.event .trace-junction::before, .trace-row.log .trace-junction::after { background: linear-gradient(#263229, #67d982, #263229); }
+.trace-row.event .trace-junction::after, .trace-row.log .trace-junction::before { opacity: .55; }
+.trace-node { align-self: center; width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 12px; padding: 11px 12px; background: var(--raised); color: var(--text); text-align: left; cursor: pointer; transition: border-color .15s, background .15s, transform .15s; }
+.trace-row.log .trace-node { text-align: right; }
+.trace-node:hover { border-color: #526557; transform: translateY(-1px); }
+.trace-node.selected { border-color: var(--green); background: color-mix(in srgb, var(--green-dark) 70%, var(--raised)); box-shadow: 0 0 0 1px #aef8bd22; }
+.trace-node.context { border-left: 3px solid #d4a7ff; }
+.trace-node.model { border-left: 3px solid #78b6ff; }
+.trace-node.tool { border-left: 3px solid #ffcc75; }
+.trace-node.failed { border-left-color: #ff8e8e; }
+.trace-node-heading { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.trace-row.log .trace-node-heading { flex-direction: row-reverse; }
+.trace-node-heading strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.trace-sequence { flex: none; color: var(--green); font: 10px ui-monospace, monospace; }
+.trace-node-meta { display: block; margin-top: 5px; overflow: hidden; color: var(--muted); font: 9px ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.trace-inspector { position: sticky; top: 14px; max-height: calc(100dvh - 28px); min-height: 640px; overflow: auto; padding: 20px; }
+.trace-empty { display: grid; min-height: 560px; place-items: center; align-content: center; color: var(--muted); text-align: center; }
+.trace-empty img { width: 88px; opacity: .65; }
+.trace-inspector-heading { padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.trace-inspector-heading h2 { margin: 5px 0 8px; overflow-wrap: anywhere; font-size: 21px; }
+.trace-inspector-heading time { font-size: 11px; }
+.trace-identity-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 14px 0; }
+.trace-identity { min-width: 0; border: 1px solid var(--line); border-radius: 9px; padding: 8px 9px; background: var(--bg); }
+.trace-identity > span { display: block; margin-bottom: 4px; color: var(--muted); font-size: 9px; text-transform: uppercase; }
+.trace-identity code, .trace-id-link { display: block; width: 100%; overflow: hidden; border: 0; padding: 0; background: none; color: #cfe8d3; font: 10px ui-monospace, monospace; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.trace-id-link { color: var(--green); cursor: pointer; }
+.trace-detail-section { margin: 18px 0; }
+.trace-detail-section h3 { margin: 0 0 8px; font-size: 13px; }
+.trace-detail-section pre, .trace-raw pre { max-height: 460px; margin: 0; font-size: 10px; }
+.trace-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; margin: 14px 0; }
+.trace-metrics div { min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 8px; background: var(--bg); }
+.trace-metrics span { display: block; overflow: hidden; color: var(--muted); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.trace-metrics strong { display: block; margin-top: 3px; font-size: 11px; }
+.trace-chip-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.trace-chip { border: 1px solid var(--line); border-radius: 999px; padding: 5px 8px; background: var(--bg); color: var(--green); font-size: 10px; cursor: pointer; }
+.trace-raw { margin-top: 18px; }
+@media (max-width: 1000px) { .studio-grid { grid-template-columns: 1fr; } .studio-editor { min-height: 320px; } .trace-workspace { grid-template-columns: 1fr; } .trace-inspector { position: static; max-height: none; min-height: 0; } }
 @media (max-width: 700px) {
   .page-heading { grid-template-columns: 1fr; gap: 14px; }
   .extension-card { grid-template-columns: 1fr; }
@@ -138,4 +204,13 @@ pre { max-height: 520px; overflow: auto; border-radius: 10px; padding: 14px; bac
   .event-card header { align-items: flex-start; flex-direction: column; }
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
   .usage-table { display: block; overflow-x: auto; }
+  .topbar { height: auto; align-items: flex-start; gap: 16px; padding: 16px; }
+  .topnav { flex-wrap: wrap; gap: 10px 16px; }
+  .trace-search { grid-template-columns: 1fr 1fr; }
+  .trace-search label:first-child { grid-column: 1 / -1; }
+  .trace-summary { grid-template-columns: repeat(2, 1fr); }
+  .trace-workspace { display: block; }
+  .trace-map-panel { min-height: 0; }
+  .trace-map { padding: 10px; overflow-x: auto; }
+  .trace-row { min-width: 620px; }
 }

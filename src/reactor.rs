@@ -218,6 +218,7 @@ impl Reactor {
                     "current_event_id": current_event.id,
                     "extension_hook_count": context_hook_logs.len(),
                     "extension_items": extension_input.len(),
+                    "input": &input,
                     "rendered_bytes": input_bytes,
                     "estimated_tokens": input_bytes.div_ceil(4),
                     "hook_preparation_duration_ms": context_preparation_duration_ms,

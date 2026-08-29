@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Trace · Habibi</title><link rel="stylesheet" href="/assets/core.css"></head><body>
+<header class="topbar"><a class="wordmark" href="/"><img src="/assets/habibi-logo.svg" alt="">Habibi</a><nav class="topnav"><a href="/trace" aria-current="page">Trace</a><a href="/events">Events</a><a href="/logs">Logs</a><a href="/stats">Stats</a><a href="/extensions">Extensions</a><a href="/studio">Studio</a></nav></header>
+<main class="trace-shell">
+  <div class="page-heading trace-heading"><div><p class="eyebrow">CAUSAL OBSERVABILITY</p><h1>System trace</h1></div><p>Follow roots, causes, context assembly, model processing, and tool execution as one connected path.</p></div>
+  <form id="trace-search" class="trace-search"><label>Event or correlation ID<input id="trace-id" name="id" autocomplete="off" placeholder="Paste an event or correlation UUID"></label><button class="primary" type="submit">Open trace</button><button class="secondary" id="latest-trace" type="button">Latest</button><label class="trace-live"><input id="trace-live" type="checkbox"> Live</label></form>
+  <div id="trace-status" class="trace-status muted" role="status">Loading latest activity…</div>
+  <section id="trace-summary" class="trace-summary" hidden></section>
+  <section class="trace-workspace">
+    <div class="trace-map-panel"><div class="trace-map-heading"><div><span class="trace-rail-key event"></span>Events</div><div><span class="trace-rail-key operation"></span>Processing</div></div><div id="trace-map" class="trace-map"></div></div>
+    <aside id="trace-inspector" class="trace-inspector"><div class="trace-empty"><img src="/assets/habibi-logo.svg" alt=""><p>Select a node to inspect its complete data.</p></div></aside>
+  </section>
+</main>
+<script type="module" src="/assets/trace.js"></script></body></html>

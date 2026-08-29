@@ -80,6 +80,7 @@ function eventCard(event) {
   const links = document.createElement("nav");
   links.className = "record-links";
   links.append(
+    recordLink("Open trace", `/trace?event_id=${encodeURIComponent(event.id)}`),
     recordLink("Related logs", `/logs?trigger_event_id=${encodeURIComponent(event.id)}`),
     recordLink("Correlation logs", `/logs?reaction_id=${encodeURIComponent(event.correlation_id)}`),
   );
