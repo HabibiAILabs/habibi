@@ -48,6 +48,25 @@ an attachment exists. Current Workspace is UTF-8-oriented and Python has no docu
 packages, so PDF, Office, image, audio, and video tasks are expected capability gaps rather than a
 representative score. Start with no-file level-1 tasks.
 
+## Initial diagnostic results
+
+Using `gpt-5.6-luna` on the 2023 validation data:
+
+- Terminal-action smoke task: **1/1** after fixing Chat to settle immediately after delivery.
+- First five level-1 tasks without files: **1/5 (20%)**. Four runs ended with an empty provider
+  response after tool discovery and therefore produced no chat answer.
+- Five hand-selected no-file reasoning tasks: **3/5 (60%)**.
+
+These are tiny diagnostic slices, not a GAIA score. They exposed and fixed a real redundant Chat
+acknowledgment loop. Remaining leading gaps are empty model completions after discovery, search-only
+web access without page retrieval, and no PDF/Office/image/audio/video analysis tools.
+
+Summarize one or more result files with:
+
+```sh
+python benchmarks/gaia/summarize.py .benchmarks/gaia-runs/*.jsonl
+```
+
 ## Formal-run caveats
 
 - GAIA is a live-web benchmark; results vary as sources change.
