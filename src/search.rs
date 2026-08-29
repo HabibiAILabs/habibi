@@ -63,7 +63,6 @@ pub enum Freshness {
 pub struct SearchResponse {
     pub query: String,
     pub provider: &'static str,
-    pub provider_status: &'static str,
     pub retryable: bool,
     pub provider_errors: Vec<String>,
     pub searched_at: String,
@@ -159,18 +158,10 @@ impl SearchHost {
             };
             results.push(result);
         }
-        let provider_status = if provider_errors.is_empty() {
-            "ok"
-        } else if results.is_empty() {
-            "unavailable"
-        } else {
-            "degraded"
-        };
         Ok(SearchResponse {
             query: query.to_owned(),
             provider,
-            provider_status,
-            retryable: provider_status != "unavailable",
+            retryable: provider_errors.is_empty() || !results.is_empty(),
             provider_errors,
             searched_at: Utc::now().to_rfc3339(),
             results,
@@ -398,8 +389,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn search_is_action_only_and_normalizes_a_local_searxng_response() {
+    fn serve_json_once(body: &'static str) -> (Url, std::thread::JoinHandle<()>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
@@ -407,7 +397,6 @@ mod tests {
             let mut request = [0u8; 2048];
             let read = stream.read(&mut request).unwrap();
             assert!(String::from_utf8_lossy(&request[..read]).contains("q=public+query"));
-            let body = r#"{"results":[{"title":"Example","url":"https://example.com/","content":"Snippet","engine":"test"}]}"#;
             use std::io::Write;
             write!(
                 stream,
@@ -417,7 +406,18 @@ mod tests {
             )
             .unwrap();
         });
-        let host = test_host(Url::parse(&format!("http://{address}/search")).unwrap());
+        (
+            Url::parse(&format!("http://{address}/search")).unwrap(),
+            server,
+        )
+    }
+
+    #[test]
+    fn search_is_action_only_and_normalizes_a_local_searxng_response() {
+        let (endpoint, server) = serve_json_once(
+            r#"{"results":[{"title":"Example","url":"https://example.com/","content":"Snippet","engine":"test"}]}"#,
+        );
+        let host = test_host(endpoint);
         let request = || SearchRequest {
             query: "public query".into(),
             count: Some(1),
@@ -432,7 +432,6 @@ mod tests {
         let _guard = host.begin_action().unwrap();
         let response = host.search(request()).unwrap();
         assert_eq!(response.provider, "searxng");
-        assert_eq!(response.provider_status, "ok");
         assert!(response.retryable);
         assert!(response.provider_errors.is_empty());
         assert_eq!(response.results[0].url, "https://example.com/");
@@ -441,23 +440,10 @@ mod tests {
 
     #[test]
     fn forwards_searxng_engine_suspensions_as_non_retryable() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0u8; 2048];
-            let _ = stream.read(&mut request).unwrap();
-            let body = r#"{"results":[],"unresponsive_engines":[["brave","Suspended: account suspended"],["google","Suspended: CAPTCHA"]]}"#;
-            use std::io::Write;
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            )
-            .unwrap();
-        });
-        let host = test_host(Url::parse(&format!("http://{address}/search")).unwrap());
+        let (endpoint, server) = serve_json_once(
+            r#"{"results":[],"unresponsive_engines":[["brave","Suspended: account suspended"],["google","Suspended: CAPTCHA"]]}"#,
+        );
+        let host = test_host(endpoint);
         let _guard = host.begin_action().unwrap();
         let response = host
             .search(SearchRequest {
@@ -466,7 +452,6 @@ mod tests {
                 freshness: Freshness::Any,
             })
             .unwrap();
-        assert_eq!(response.provider_status, "unavailable");
         assert!(!response.retryable);
         assert_eq!(
             response.provider_errors,
