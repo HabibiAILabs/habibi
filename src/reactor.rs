@@ -33,6 +33,14 @@ impl Reactor {
         }
     }
 
+    pub fn model_provider(&self) -> &'static str {
+        self.model.provider_name()
+    }
+
+    pub fn model_name(&self) -> &str {
+        self.model.model_name()
+    }
+
     pub fn model_catalog(&self) -> Result<ModelCatalog> {
         self.model.catalog()
     }
@@ -65,7 +73,7 @@ impl Reactor {
             reaction_id,
             None,
             reaction_id,
-            json!({ "model": self.model.model_name() }),
+            json!({ "provider": self.model.provider_name(), "model": self.model.model_name() }),
         ))?;
         Ok(())
     }
@@ -263,7 +271,7 @@ impl Reactor {
                 Some(current_event.id),
                 trigger.correlation_id,
                 json!({
-                    "provider": "openai-codex", "model": self.model.model_name(),
+                    "provider": self.model.provider_name(), "model": self.model.model_name(),
                     "endpoint": self.model.endpoint(), "root_trigger_event_id": trigger.id,
                     "current_event_id": current_event.id,
                     "current_event_type": current_event.event_type,

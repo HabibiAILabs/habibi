@@ -26,7 +26,7 @@ async function loadStats() {
   $("#output-tokens").textContent = number.format(usage.output_tokens);
   $("#failed-invocations").textContent = `${number.format(usage.failed_invocations)} failed invocations`;
   $("#model-usage").replaceChildren(...usage.models.map((model) => row([
-    model.model, number.format(model.invocations), number.format(model.input_tokens),
+    `${model.provider} / ${model.model}`, number.format(model.invocations), number.format(model.input_tokens),
     number.format(model.cache_read_tokens), number.format(model.cache_write_tokens),
     number.format(model.output_tokens), number.format(model.total_tokens), cost(model.estimated_cost_usd),
   ])));
@@ -58,7 +58,9 @@ async function loadStats() {
 }
 
 async function loadCatalog() {
-  const catalog = (await jsonRequest("/api/models")).catalog;
+  const result = await jsonRequest("/api/models");
+  const catalog = result.catalog;
+  $("#active-model").textContent = `${result.active.provider} / ${result.active.model} · change HABIBI_MODEL_PROVIDER and HABIBI_MODEL, then restart Habibi to switch.`;
   $("#catalog-status").textContent = `${number.format(catalog.models.length)} priced models · catalog updated ${new Date(catalog.updated_at).toLocaleString()} · source: ${catalog.source}`;
   $("#model-catalog").replaceChildren(...catalog.models.map((model) => row([
     `${model.provider} / ${model.id}`,

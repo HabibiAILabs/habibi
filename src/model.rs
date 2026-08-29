@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use reqwest::{Client, header};
+use reqwest::{Client, Url, header};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -16,13 +16,30 @@ Act only through tools advertised for this invocation. Use habibi.tools.search w
 Tool calls in one invocation are independent; their durable results are delivered in a subsequent action.batch.completed event.
 Plain assistant text is operational output only; use an advertised extension tool for user-visible or domain effects."#;
 const DEFAULT_CODEX_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
+const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelProvider {
+    OpenAiCodex,
+    Ollama,
+}
+
+impl ModelProvider {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::OpenAiCodex => "openai-codex",
+            Self::Ollama => "ollama",
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ModelConfig {
+    pub provider: ModelProvider,
     pub endpoint: String,
     pub model: String,
     pub thinking: Option<String>,
-    pub credentials: CredentialStore,
+    pub credentials: Option<CredentialStore>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -42,15 +59,33 @@ pub struct EstimatedCost {
 
 impl ModelConfig {
     pub fn from_env() -> Result<Self> {
-        let endpoint =
-            nonempty_env("HABIBI_OPENAI_CODEX_URL").unwrap_or_else(|| DEFAULT_CODEX_URL.into());
-        let model = nonempty_env("HABIBI_MODEL").unwrap_or_else(|| "gpt-5.6-luna".into());
-        let model = model
+        let configured_model = nonempty_env("HABIBI_MODEL");
+        let prefixed_provider = configured_model.as_deref().and_then(|model| {
+            model
+                .strip_prefix("openai-codex/")
+                .map(|_| ModelProvider::OpenAiCodex)
+                .or_else(|| model.strip_prefix("ollama/").map(|_| ModelProvider::Ollama))
+        });
+        let provider = match nonempty_env("HABIBI_MODEL_PROVIDER").as_deref() {
+            None => prefixed_provider.unwrap_or(ModelProvider::OpenAiCodex),
+            Some("openai-codex" | "openai") => ModelProvider::OpenAiCodex,
+            Some("ollama") => ModelProvider::Ollama,
+            Some(provider) => bail!("unsupported HABIBI_MODEL_PROVIDER '{provider}'"),
+        };
+        if prefixed_provider.is_some_and(|prefixed| prefixed != provider) {
+            bail!("HABIBI_MODEL prefix conflicts with HABIBI_MODEL_PROVIDER");
+        }
+        if provider == ModelProvider::Ollama && configured_model.is_none() {
+            bail!("HABIBI_MODEL is required for the Ollama provider");
+        }
+        let default_model = "gpt-5.6-luna";
+        let configured_model = configured_model.as_deref().unwrap_or(default_model);
+        let model = configured_model
             .strip_prefix("openai-codex/")
-            .unwrap_or(&model)
+            .or_else(|| configured_model.strip_prefix("ollama/"))
+            .unwrap_or(configured_model)
             .to_owned();
         let thinking = nonempty_env("HABIBI_THINKING");
-
         if let Some(level) = &thinking
             && !matches!(
                 level.as_str(),
@@ -59,12 +94,25 @@ impl ModelConfig {
         {
             bail!("HABIBI_THINKING has invalid level '{level}'");
         }
-
+        let (endpoint, credentials) = match provider {
+            ModelProvider::OpenAiCodex => (
+                nonempty_env("HABIBI_OPENAI_CODEX_URL").unwrap_or_else(|| DEFAULT_CODEX_URL.into()),
+                Some(CredentialStore::from_env()?),
+            ),
+            ModelProvider::Ollama => (
+                ollama_chat_url(
+                    &nonempty_env("HABIBI_OLLAMA_URL").unwrap_or_else(|| DEFAULT_OLLAMA_URL.into()),
+                )?
+                .to_string(),
+                None,
+            ),
+        };
         Ok(Self {
+            provider,
             endpoint,
             model,
             thinking,
-            credentials: CredentialStore::from_env()?,
+            credentials,
         })
     }
 }
@@ -74,6 +122,29 @@ fn nonempty_env(name: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
+}
+
+fn ollama_chat_url(configured: &str) -> Result<Url> {
+    let mut url = Url::parse(configured).context("HABIBI_OLLAMA_URL is not a valid URL")?;
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        bail!("HABIBI_OLLAMA_URL must not contain credentials, query, or fragment");
+    }
+    let loopback = url
+        .host_str()
+        .and_then(|host| host.parse::<std::net::IpAddr>().ok())
+        .is_some_and(|address| address.is_loopback())
+        || url.host_str() == Some("localhost");
+    if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
+        bail!("Ollama must use HTTPS or an explicitly configured loopback HTTP origin");
+    }
+    if !url.path().trim_end_matches('/').ends_with("/api/chat") {
+        url.set_path(&format!("{}/api/chat", url.path().trim_end_matches('/')));
+    }
+    Ok(url)
 }
 
 pub struct ModelClient {
@@ -118,7 +189,56 @@ impl ModelClient {
         &self.config.model
     }
 
+    pub async fn verify(&self) -> Result<()> {
+        if self.config.provider != ModelProvider::Ollama {
+            return Ok(());
+        }
+        let mut endpoint = Url::parse(&self.config.endpoint)?;
+        let base = endpoint
+            .path()
+            .strip_suffix("/api/chat")
+            .unwrap_or_default();
+        endpoint.set_path(&format!("{base}/api/show"));
+        let response = self
+            .client
+            .post(endpoint)
+            .json(&json!({ "model": self.config.model }))
+            .send()
+            .await
+            .context("cannot reach Ollama; start it before Habibi")?;
+        let status = response.status();
+        let value: Value = response
+            .json()
+            .await
+            .context("Ollama model metadata was not valid JSON")?;
+        if !status.is_success() {
+            let message = value
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("model lookup failed");
+            bail!("Ollama returned {status}: {message}");
+        }
+        let supports_tools = value
+            .get("capabilities")
+            .and_then(Value::as_array)
+            .is_some_and(|capabilities| capabilities.iter().any(|value| value == "tools"));
+        if !supports_tools {
+            bail!(
+                "Ollama model '{}' does not declare tool support, which Habibi requires",
+                self.config.model
+            );
+        }
+        Ok(())
+    }
+
     pub fn request_body(&self, input: &[Value], tools: &[ToolDefinition]) -> Value {
+        match self.config.provider {
+            ModelProvider::OpenAiCodex => self.codex_request_body(input, tools),
+            ModelProvider::Ollama => self.ollama_request_body(input, tools),
+        }
+    }
+
+    fn codex_request_body(&self, input: &[Value], tools: &[ToolDefinition]) -> Value {
         let tools = tools
             .iter()
             .map(|tool| {
@@ -148,6 +268,45 @@ impl ModelClient {
         body
     }
 
+    fn ollama_request_body(&self, input: &[Value], tools: &[ToolDefinition]) -> Value {
+        let mut messages = vec![json!({ "role": "system", "content": SYSTEM_PROMPT })];
+        messages.extend(input.iter().map(ollama_message));
+        let tools = tools
+            .iter()
+            .map(|tool| {
+                json!({
+                    "type": "function",
+                    "function": {
+                        "name": provider_tool_name(&tool.name),
+                        "description": tool.description,
+                        "parameters": tool.input_schema
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut body = json!({
+            "model": self.config.model,
+            "messages": messages,
+            "stream": false,
+            "tools": tools
+        });
+        if let Some(level) = self.config.thinking.as_deref() {
+            body["think"] = match level {
+                "off" => json!(false),
+                "minimal" | "low" => json!("low"),
+                "medium" => json!("medium"),
+                "high" => json!("high"),
+                "xhigh" | "max" => json!("max"),
+                _ => unreachable!("thinking level was validated"),
+            };
+        }
+        body
+    }
+
+    pub fn provider_name(&self) -> &'static str {
+        self.config.provider.id()
+    }
+
     pub fn endpoint(&self) -> &str {
         &self.config.endpoint
     }
@@ -163,7 +322,7 @@ impl ModelClient {
     pub fn estimate_cost(&self, usage: &TokenUsage) -> Option<EstimatedCost> {
         let model: CatalogModel = self
             .catalog
-            .lookup("openai-codex", &self.config.model)
+            .lookup(self.provider_name(), &self.config.model)
             .ok()??;
         let pricing = &model.pricing;
         let input_rate = pricing.input_usd_per_million;
@@ -191,13 +350,21 @@ impl ModelClient {
     }
 
     pub async fn invoke(&self, body: Value) -> Result<ModelResponse> {
+        match self.config.provider {
+            ModelProvider::OpenAiCodex => self.invoke_codex(body).await,
+            ModelProvider::Ollama => self.invoke_ollama(body).await,
+        }
+    }
+
+    async fn invoke_codex(&self, body: Value) -> Result<ModelResponse> {
         let credential = self
             .config
             .credentials
+            .as_ref()
+            .context("OpenAI credentials are not configured")?
             .valid_openai_credential(&self.client)
             .await?;
         let request_id = Uuid::now_v7().to_string();
-
         let response = self
             .client
             .post(&self.config.endpoint)
@@ -215,7 +382,6 @@ impl ModelClient {
             .send()
             .await
             .context("OpenAI Codex request failed")?;
-
         let status = response.status();
         let response_body = response
             .text()
@@ -224,9 +390,134 @@ impl ModelClient {
         if !status.is_success() {
             bail!("OpenAI Codex returned {status}: {response_body}");
         }
-
         parse_sse_response(&response_body, &self.config.model)
     }
+
+    async fn invoke_ollama(&self, body: Value) -> Result<ModelResponse> {
+        let response = self
+            .client
+            .post(&self.config.endpoint)
+            .json(&body)
+            .send()
+            .await
+            .context("Ollama request failed")?;
+        let status = response.status();
+        let response_body = response
+            .text()
+            .await
+            .context("failed to read Ollama response")?;
+        if !status.is_success() {
+            bail!("Ollama returned {status}: {response_body}");
+        }
+        let response: Value =
+            serde_json::from_str(&response_body).context("Ollama returned invalid JSON")?;
+        parse_ollama_response(response, &self.config.model)
+    }
+}
+
+fn ollama_message(input: &Value) -> Value {
+    let role = input.get("role").and_then(Value::as_str).unwrap_or("user");
+    let content = match input.get("content") {
+        Some(Value::String(content)) => content.clone(),
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(|block| {
+                block
+                    .get("text")
+                    .or_else(|| block.get("content"))
+                    .and_then(Value::as_str)
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => serde_json::to_string(input).unwrap_or_default(),
+    };
+    json!({ "role": role, "content": content })
+}
+
+fn parse_ollama_response(response: Value, configured_model: &str) -> Result<ModelResponse> {
+    if let Some(error) = response.get("error").and_then(Value::as_str) {
+        bail!("Ollama response failed: {error}");
+    }
+    let message = response
+        .get("message")
+        .context("Ollama response missing message")?;
+    let content = message
+        .get("content")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let tool_calls = message
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|call| -> Result<ToolCall> {
+            let function = call
+                .get("function")
+                .context("Ollama tool call missing function")?;
+            let arguments = match function.get("arguments") {
+                Some(Value::String(arguments)) => serde_json::from_str(arguments)
+                    .context("Ollama tool call contained invalid JSON arguments")?,
+                Some(arguments) => arguments.clone(),
+                None => json!({}),
+            };
+            Ok(ToolCall {
+                call_id: call
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("ollama-{}", Uuid::now_v7())),
+                name: function
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .context("Ollama tool call missing name")?
+                    .to_owned(),
+                arguments,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut output_items = Vec::new();
+    if !content.is_empty() {
+        output_items.push(json!({
+            "type": "message",
+            "role": "assistant",
+            "content": [{ "type": "output_text", "text": content }]
+        }));
+    }
+    output_items.extend(tool_calls.iter().map(|call| {
+        json!({
+            "type": "function_call",
+            "call_id": call.call_id,
+            "name": call.name,
+            "arguments": serde_json::to_string(&call.arguments).unwrap_or_else(|_| "{}".into())
+        })
+    }));
+    let input = response.get("prompt_eval_count").and_then(Value::as_u64);
+    let output = response.get("eval_count").and_then(Value::as_u64);
+    let usage = (input.is_some() || output.is_some()).then(|| TokenUsage {
+        input,
+        output,
+        cache_read: None,
+        cache_write: None,
+        total_tokens: match (input, output) {
+            (Some(input), Some(output)) => Some(input.saturating_add(output)),
+            _ => None,
+        },
+    });
+    let model = response
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or(configured_model)
+        .to_owned();
+    Ok(ModelResponse {
+        content,
+        output_items,
+        tool_calls,
+        provider_response: response,
+        provider: Some("ollama".into()),
+        model: Some(model),
+        usage,
+    })
 }
 
 fn parse_sse_response(sse: &str, model: &str) -> Result<ModelResponse> {
@@ -360,6 +651,81 @@ fn parse_usage(value: &Value) -> TokenUsage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builds_native_ollama_messages_and_tools() {
+        let client = ModelClient::new(
+            ModelConfig {
+                provider: ModelProvider::Ollama,
+                endpoint: "http://127.0.0.1:11434/api/chat".into(),
+                model: "qwen3:8b".into(),
+                thinking: Some("medium".into()),
+                credentials: None,
+            },
+            CatalogManager::from_env().unwrap(),
+        )
+        .unwrap();
+        let body = client.request_body(
+            &[json!({
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "hello" }]
+            })],
+            &[ToolDefinition {
+                name: "chat.send_message".into(),
+                description: "Reply".into(),
+                input_schema: json!({ "type": "object" }),
+            }],
+        );
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["messages"][1]["content"], "hello");
+        assert_eq!(body["tools"][0]["function"]["name"], "chat__send_message");
+        assert_eq!(body["think"], "medium");
+        assert_eq!(body["stream"], false);
+    }
+
+    #[test]
+    fn parses_ollama_tool_calls_and_usage() {
+        let response = parse_ollama_response(
+            json!({
+                "model": "qwen3:8b",
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "thinking": "private reasoning",
+                    "tool_calls": [{
+                        "function": {
+                            "name": "chat__send_message",
+                            "arguments": { "session_id": "current", "content": "hello" }
+                        }
+                    }]
+                },
+                "prompt_eval_count": 41,
+                "eval_count": 7,
+                "done": true
+            }),
+            "qwen3:8b",
+        )
+        .unwrap();
+        assert_eq!(response.provider.as_deref(), Some("ollama"));
+        assert_eq!(response.model.as_deref(), Some("qwen3:8b"));
+        assert_eq!(response.tool_calls[0].name, "chat__send_message");
+        assert_eq!(response.tool_calls[0].arguments["content"], "hello");
+        assert!(response.tool_calls[0].call_id.starts_with("ollama-"));
+        assert_eq!(response.usage.unwrap().total_tokens, Some(48));
+    }
+
+    #[test]
+    fn converts_responses_context_to_ollama_messages() {
+        assert_eq!(
+            ollama_message(&json!({
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "first" }, { "type": "input_text", "text": "second" }]
+            })),
+            json!({ "role": "user", "content": "first\nsecond" })
+        );
+        assert!(ollama_chat_url("http://127.0.0.1:11434").is_ok());
+        assert!(ollama_chat_url("http://ollama.example").is_err());
+    }
 
     #[test]
     fn parses_streamed_function_call_when_completed_output_is_empty() {

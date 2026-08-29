@@ -28,7 +28,7 @@ measured context hooks.
 Habibi's core provides:
 
 - An append-only SQLite event store
-- A native OpenAI ChatGPT/Codex OAuth model transport
+- Native OpenAI ChatGPT/Codex OAuth and local Ollama model transports
 - A queue-driven event reactor with one model invocation per processed event
 - A searchable, chain-scoped tool registry with measured suggestions, advertisements, calls, and outcomes
 - A local Axum web server
@@ -41,13 +41,14 @@ do not isolate the model from Habibi's global event history.
 ## Requirements
 
 - Rust (the repository's `mise.toml` installs the stable toolchain)
-- An OpenAI account with a ChatGPT subscription that provides Codex access
+- Either an OpenAI account with ChatGPT Codex access, or a local Ollama server and tool-capable model
 
-Habibi does not depend on pi, an OpenAI API key, Node.js, or an external model proxy.
+Habibi does not depend on pi, an OpenAI API key, Node.js, or an external model proxy. Ollama is
+optional and uses its native local API.
 
 ## Authenticate
 
-Run Habibi's native device-code OAuth flow:
+For OpenAI Codex, run Habibi's native device-code OAuth flow. Ollama needs no Habibi login.
 
 ```sh
 mise exec -- cargo run -- login
@@ -65,13 +66,30 @@ cp .env.example .env
 
 | Variable | Required | Default |
 | --- | --- | --- |
-| `HABIBI_MODEL` | no | `gpt-5.6-luna` |
+| `HABIBI_MODEL_PROVIDER` | no | `openai-codex` |
+| `HABIBI_MODEL` | OpenAI: no; Ollama: yes | `gpt-5.6-luna` |
 | `HABIBI_THINKING` | no | provider default |
 | `HABIBI_AUTH_FILE` | no | `~/.config/habibi/auth.json` |
 | `HABIBI_OPENAI_CODEX_URL` | no | ChatGPT Codex Responses endpoint |
+| `HABIBI_OLLAMA_URL` | no | `http://127.0.0.1:11434` |
 | `HABIBI_DB` | no | `habibi.db` |
 | `HABIBI_BIND` | no | `127.0.0.1:8787` |
 | `HABIBI_EXTENSIONS_DIR` | no | `extensions` |
+
+Select OpenAI with `HABIBI_MODEL_PROVIDER=openai-codex`, or Ollama with:
+
+```env
+HABIBI_MODEL_PROVIDER=ollama
+HABIBI_MODEL=qwen3:8b
+HABIBI_OLLAMA_URL=http://127.0.0.1:11434
+```
+
+`HABIBI_MODEL=ollama/qwen3:8b` is equivalent when `HABIBI_MODEL_PROVIDER` is omitted. Switching
+providers requires a Habibi restart; durable events, logs, usage, and causal traces continue in the
+same database and record the provider used by each invocation. The Stats page shows the active
+provider/model and keeps usage separated by both. Local Ollama has no authentication,
+so Habibi accepts plaintext Ollama URLs only on loopback. HTTPS is required otherwise. Use a model
+whose Ollama metadata declares tool support.
 
 ## Run
 

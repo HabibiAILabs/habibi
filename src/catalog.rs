@@ -86,11 +86,6 @@ impl CatalogManager {
                 entry.provider == provider
                     && (entry.id == model || entry.aliases.iter().any(|alias| alias == model))
             })
-            .or_else(|| {
-                catalog.models.iter().find(|entry| {
-                    entry.id == model || entry.aliases.iter().any(|alias| alias == model)
-                })
-            })
             .cloned())
     }
 
@@ -259,6 +254,23 @@ fn persist_catalog(path: &Path, catalog: &ModelCatalog) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pricing_lookup_never_crosses_provider_boundaries() {
+        let catalog: ModelCatalog = serde_json::from_str(DEFAULT_CATALOG).unwrap();
+        let manager = CatalogManager {
+            path: PathBuf::new(),
+            source_url: String::new(),
+            catalog: Arc::new(RwLock::new(catalog)),
+        };
+        assert!(
+            manager
+                .lookup("openai-codex", "gpt-5.6-luna")
+                .unwrap()
+                .is_some()
+        );
+        assert!(manager.lookup("ollama", "gpt-5.6-luna").unwrap().is_none());
+    }
 
     #[test]
     fn refresh_merge_preserves_local_aliases() {

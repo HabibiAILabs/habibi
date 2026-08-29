@@ -8,7 +8,7 @@ Habibi is a local, event-sourced AI runtime. This roadmap describes direction ra
 - Searchable operational logs separated from events
 - Queue-driven model/action processing
 - Concurrent action batches with durable requests and results
-- Native OpenAI ChatGPT/Codex OAuth transport
+- Native OpenAI ChatGPT/Codex OAuth and local Ollama transports
 - Model pricing catalog, token/cache accounting, and historical cost snapshots
 - Capability-declared Lua extensions with web, KV, events, tools, owned context hooks, and separate tool suggestions
 - Searchable chain-scoped tool surfaces with global advertisement, call, outcome, latency, and schema-token measurements
@@ -48,7 +48,7 @@ Habibi is a local, event-sourced AI runtime. This roadmap describes direction ra
 - Persistent dispatcher receipts for crash-safe resume
 - Explicit deterministic handlers for internal action and batch events
 - Replay and recovery tooling
-- Better queue and causation visualization
+- Trace export and semantic-link overlays for the causal visualization
 
 ## Medium term
 
@@ -63,7 +63,7 @@ Habibi is a local, event-sourced AI runtime. This roadmap describes direction ra
 
 ### Runtime and model support
 
-- Additional native model providers and OAuth transports
+- Additional native model providers and OAuth transports beyond OpenAI and Ollama
 - Provider/model selection policies by event type
 - Context construction extensions and retrieval policies
 - Budget and latency accounting without arbitrary reaction-turn limits

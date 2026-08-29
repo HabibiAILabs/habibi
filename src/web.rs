@@ -406,7 +406,16 @@ fn build_event_query(query: EventsQuery) -> anyhow::Result<StoreEventQuery> {
 
 async fn models(State(state): State<WebState>) -> Response {
     match state.reactor.model_catalog() {
-        Ok(catalog) => json_response(StatusCode::OK, json!({ "catalog": catalog })),
+        Ok(catalog) => json_response(
+            StatusCode::OK,
+            json!({
+                "active": {
+                    "provider": state.reactor.model_provider(),
+                    "model": state.reactor.model_name(),
+                },
+                "catalog": catalog
+            }),
+        ),
         Err(error) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": error.to_string() }),

@@ -51,6 +51,7 @@ pub struct StoreLogQuery {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ModelUsageStats {
+    pub provider: String,
     pub model: String,
     pub invocations: u64,
     pub input_tokens: u64,
@@ -589,6 +590,7 @@ impl EventStore {
     pub fn usage_stats(&self) -> Result<UsageStats> {
         let mut statement = self.connection.prepare(
             "SELECT
+                COALESCE(json_extract(payload, '$.provider'), 'unknown'),
                 COALESCE(json_extract(payload, '$.model'), 'unknown'),
                 COUNT(*),
                 COALESCE(SUM(json_extract(payload, '$.usage.input')), 0),
@@ -601,22 +603,23 @@ impl EventStore {
                 MAX(occurred_at)
              FROM logs
              WHERE name = 'model.invocation.completed'
-             GROUP BY COALESCE(json_extract(payload, '$.model'), 'unknown')
-             ORDER BY COUNT(*) DESC, 1 ASC",
+             GROUP BY 1, 2
+             ORDER BY COUNT(*) DESC, 1 ASC, 2 ASC",
         )?;
         let models = statement
             .query_map([], |row| {
                 Ok(ModelUsageStats {
-                    model: row.get(0)?,
-                    invocations: row.get::<_, i64>(1)? as u64,
-                    input_tokens: row.get::<_, i64>(2)? as u64,
-                    output_tokens: row.get::<_, i64>(3)? as u64,
-                    cache_read_tokens: row.get::<_, i64>(4)? as u64,
-                    cache_write_tokens: row.get::<_, i64>(5)? as u64,
-                    total_tokens: row.get::<_, i64>(6)? as u64,
-                    estimated_cost_usd: row.get(7)?,
-                    priced_invocations: row.get::<_, i64>(8)? as u64,
-                    last_invocation_at: row.get(9)?,
+                    provider: row.get(0)?,
+                    model: row.get(1)?,
+                    invocations: row.get::<_, i64>(2)? as u64,
+                    input_tokens: row.get::<_, i64>(3)? as u64,
+                    output_tokens: row.get::<_, i64>(4)? as u64,
+                    cache_read_tokens: row.get::<_, i64>(5)? as u64,
+                    cache_write_tokens: row.get::<_, i64>(6)? as u64,
+                    total_tokens: row.get::<_, i64>(7)? as u64,
+                    estimated_cost_usd: row.get(8)?,
+                    priced_invocations: row.get::<_, i64>(9)? as u64,
+                    last_invocation_at: row.get(10)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;

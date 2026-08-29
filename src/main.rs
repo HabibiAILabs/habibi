@@ -91,6 +91,7 @@ async fn main() -> Result<()> {
     let bind_address = std::env::var("HABIBI_BIND").unwrap_or_else(|_| "127.0.0.1:8787".to_owned());
     let catalog = CatalogManager::from_env()?;
     let model = ModelClient::new(ModelConfig::from_env()?, catalog)?;
+    model.verify().await?;
     let store = EventStore::open(&database_path)?.shared();
     let extensions = Arc::new(ExtensionManager::load(&extensions_path, store.clone())?);
     let studio = Arc::new(StudioService::from_env()?);
@@ -122,6 +123,11 @@ async fn main() -> Result<()> {
     println!("Habibi — one continuous event stream");
     println!("Event store: {database_path}");
     println!("Extensions: {}", extensions_path.display());
+    println!(
+        "Model: {}/{}",
+        state.reactor.model_provider(),
+        state.reactor.model_name()
+    );
     println!("Extension drafts: {}", state.studio.root_path().display());
     println!("Web: http://{bind_address}");
 
