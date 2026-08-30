@@ -123,6 +123,8 @@ def trace_metrics(trace):
             cost += float(estimated["total_usd"])
     return {
         "actions": actions, "groups": groups, "model_invocations": len(invocations),
+        "validation_failures": sum(item.get("name") == "tool.call_validation.failed" for item in logs),
+        "validation_exhaustions": sum(item.get("name") == "tool.call_validation.exhausted" for item in logs),
         "usage": usage, "estimated_cost_usd": cost, "cost_known": cost_known,
         "brave_searches": sum(action["tool"] == "web-search.search" and
                               isinstance(action.get("result"), dict) and action["result"].get("provider") == "brave"
@@ -160,6 +162,14 @@ def evaluate(fixture, messages, trace, duration):
         modes = {action["delivery_mode"] for action in metrics["actions"]}
         required = set(fixture["required_delivery_modes"])
         assertions.append(assertion("delivery_modes", sorted(required), sorted(modes), required <= modes))
+    if "required_validation_failures" in fixture:
+        assertions.append(assertion("schema_validation_retries", fixture["required_validation_failures"],
+                                    metrics["validation_failures"]))
+    if "required_validation_exhaustions" in fixture:
+        assertions.append(assertion("schema_validation_exhaustions", fixture["required_validation_exhaustions"],
+                                    metrics["validation_exhaustions"]))
+    if "expected_action_count" in fixture:
+        assertions.append(assertion("action_count", fixture["expected_action_count"], len(metrics["actions"])))
     return {
         "fixture_id": fixture["id"], "pass": all(item["pass"] for item in assertions),
         "assertions": assertions, "expected_message": fixture["expected"], "actual_message": actual,
@@ -176,6 +186,8 @@ def merge_trace_metrics(result, trace):
     result["estimated_cost_usd"] += metrics["estimated_cost_usd"]
     result["cost_known"] = result["cost_known"] and metrics["cost_known"]
     result["brave_searches"] += metrics["brave_searches"]
+    result["validation_failures"] = result.get("validation_failures", 0) + metrics["validation_failures"]
+    result["validation_exhaustions"] = result.get("validation_exhaustions", 0) + metrics["validation_exhaustions"]
     result["actions"].extend(metrics["actions"])
     for group_id, events in metrics["groups"].items():
         result["groups"].setdefault(group_id, []).extend(events)
@@ -188,6 +200,8 @@ def public_result(result):
         "duration_ms": result["duration_ms"], "model_invocations": result["model_invocations"],
         "usage": result["usage"], "estimated_cost_usd": result["estimated_cost_usd"],
         "cost_known": result["cost_known"], "brave_searches": result["brave_searches"],
+        "validation_failures": result.get("validation_failures", 0),
+        "validation_exhaustions": result.get("validation_exhaustions", 0),
         "actions": [{key: action.get(key) for key in
             ("event_id", "sequence", "tool", "status", "delivery_mode", "action_group_id", "index")}
             for action in result["actions"]],
@@ -253,7 +267,7 @@ def run_fixture(args, fixture, run_root):
                 raise RuntimeError("idempotent Chat retry did not return the original acceptance")
         deadline = time.monotonic() + args.timeout
         messages = []
-        while time.monotonic() < deadline:
+        while not fixture.get("expect_no_message") and time.monotonic() < deadline:
             _, history = request_json(origin + f"/extensions/chat/api/sessions/{session_id}/messages")
             messages = history["messages"]
             if any(message.get("role") == "assistant" for message in messages):
@@ -297,6 +311,7 @@ def main():
     if not 0 <= args.max_brave_searches <= 20: raise SystemExit("Brave search ceiling must be between 0 and 20")
     if not args.binary.exists(): raise SystemExit(f"build Habibi first: {args.binary}")
     definitions = json.loads(FIXTURES.read_text())["fixtures"]
+    if args.live: definitions = [item for item in definitions if item.get("live", True)]
     if args.fixture: definitions = [item for item in definitions if item["id"] in args.fixture]
     run_id = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_root = ARTIFACT_ROOT / run_id; run_root.mkdir(parents=True)

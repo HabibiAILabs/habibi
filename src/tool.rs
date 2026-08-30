@@ -28,6 +28,8 @@ pub struct ToolCall {
     pub call_id: String,
     pub name: String,
     pub arguments: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argument_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,6 +127,9 @@ impl ToolRuntime {
         fingerprints.sort_by_key(Value::to_string);
         let mut provider_names = std::collections::HashSet::new();
         for definition in &definitions {
+            jsonschema::validator_for(&definition.input_schema).with_context(|| {
+                format!("tool '{}' has an invalid input schema", definition.name)
+            })?;
             let provider_name = provider_tool_name(&definition.name);
             if !provider_names.insert(provider_name.clone()) {
                 bail!("tool names collide after provider normalization: '{provider_name}'");
@@ -609,6 +614,31 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_tool_schemas_before_advertisement() {
+        let directory = tempfile::tempdir().unwrap();
+        let extension_directory = directory.path().join("example");
+        std::fs::create_dir_all(&extension_directory).unwrap();
+        std::fs::write(
+            extension_directory.join("extension.toml"),
+            "id = \"example\"\nname = \"Example\"\nversion = \"1.0.0\"\napi_version = 2\n[capabilities]\ntools = true\n",
+        )
+        .unwrap();
+        std::fs::write(
+            extension_directory.join("extension.lua"),
+            "habibi.tools.register({ name = 'example.bad', description = 'Bad', input_schema = { type = 'object', required = 'message' } }, function() return {} end)",
+        )
+        .unwrap();
+        let store = EventStore::open(":memory:").unwrap().shared();
+        let extensions = Arc::new(ExtensionManager::load(directory.path(), store.clone()).unwrap());
+        let error = ToolRuntime::new(store, extensions)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("example.bad"), "{error}");
+        assert!(error.contains("invalid input schema"), "{error}");
+    }
+
+    #[test]
     fn tool_search_returns_only_model_facing_definition_fields() {
         let directory = tempfile::tempdir().unwrap();
         let store = EventStore::open(":memory:").unwrap().shared();
@@ -648,6 +678,7 @@ mod tests {
                     call_id: "call-1".into(),
                     name: "example.read".into(),
                     arguments: json!({}),
+                    argument_error: None,
                 },
                 &ToolContext {
                     current_event: trigger.clone(),

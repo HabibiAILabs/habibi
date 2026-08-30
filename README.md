@@ -167,6 +167,11 @@ inbox independently on completion, while batched results are exposed once throug
 in call order. `actions.completed` is always persisted and enters the inbox only when it has batched
 results. Failures follow the same delivery mode; there is no terminal/one-way tool contract.
 
+Before dispatch, core validates the complete proposed action group against the pinned tool schemas. If
+any call is invalid, no handler runs and no action/request/result events are created. Validation errors
+are returned to the model as temporary correction input for up to three retries and retained only in
+operational model/tool logs. Malformed argument JSON and unadvertised tool names use the same bounded correction path. Exhaustion completes the inbox item without executing the malformed group.
+
 `GET /api/logs` and `/logs` provide searchable operational history by level, category, name,
 dispatch, event, correlation, action group, action, tool call, time, payload text, and sequence. Model
 logs include exact requests, native output items, parsed tool calls, token usage, cache reads and

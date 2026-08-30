@@ -15,7 +15,7 @@ Each invocation processes one immutable current event. Extension-provided contex
 Durable event history spans extension-level chat sessions; sessions are views, not memory boundaries. Use advertised or discovered history tools instead of claiming past sessions are inaccessible.
 Act only through tools advertised for this invocation. Use habibi.tools.search when you need a tool that is not advertised. Search results make returned tools available on the next invocation; when the current task requires one, call it before delivering a final result.
 A successful action result is a fact, not a request for acknowledgment. If it confirms that a user-visible message or requested effect was already delivered, normally take no action: do not send a confirmation, thanks, or follow-up message. Failed results may require recovery or a user-visible explanation.
-Tool calls in one invocation form one concurrent action group. Set the reserved `_habibi_delivery` argument to `asap` for an independently delivered result or `batch` for delivery through `actions.completed`. If omitted, one call defaults to `asap` and multiple calls default to `batch`.
+Tool calls in one invocation form one concurrent action group and every argument must match its advertised schema. If Habibi returns tool-call validation errors, no actions were executed; return the complete corrected action group. Habibi allows at most three validation retries. Set the reserved `_habibi_delivery` argument to `asap` for an independently delivered result or `batch` for delivery through `actions.completed`. If omitted, one call defaults to `asap` and multiple calls default to `batch`.
 Plain assistant text is operational output only; use an advertised extension tool for user-visible or domain effects."#;
 const DEFAULT_CODEX_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
@@ -438,6 +438,22 @@ fn ollama_message(input: &Value) -> Value {
     json!({ "role": role, "content": content })
 }
 
+fn parse_tool_arguments(arguments: Option<&Value>, provider: &str) -> (Value, Option<String>) {
+    match arguments {
+        Some(Value::String(arguments)) => match serde_json::from_str(arguments) {
+            Ok(arguments) => (arguments, None),
+            Err(error) => (
+                Value::Null,
+                Some(format!(
+                    "{provider} tool call contained invalid JSON arguments: {error}"
+                )),
+            ),
+        },
+        Some(arguments) => (arguments.clone(), None),
+        None => (json!({}), None),
+    }
+}
+
 fn parse_ollama_response(response: Value, configured_model: &str) -> Result<ModelResponse> {
     if let Some(error) = response.get("error").and_then(Value::as_str) {
         bail!("Ollama response failed: {error}");
@@ -455,31 +471,29 @@ fn parse_ollama_response(response: Value, configured_model: &str) -> Result<Mode
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .map(|call| -> Result<ToolCall> {
-            let function = call
-                .get("function")
-                .context("Ollama tool call missing function")?;
-            let arguments = match function.get("arguments") {
-                Some(Value::String(arguments)) => serde_json::from_str(arguments)
-                    .context("Ollama tool call contained invalid JSON arguments")?,
-                Some(arguments) => arguments.clone(),
-                None => json!({}),
-            };
-            Ok(ToolCall {
+        .map(|call| {
+            let function = call.get("function");
+            let (arguments, mut argument_error) =
+                parse_tool_arguments(function.and_then(|value| value.get("arguments")), "Ollama");
+            if function.is_none() {
+                argument_error = Some("Ollama tool call is missing function".into());
+            }
+            ToolCall {
                 call_id: call
                     .get("id")
                     .and_then(Value::as_str)
                     .map(str::to_owned)
                     .unwrap_or_else(|| format!("ollama-{}", Uuid::now_v7())),
                 name: function
-                    .get("name")
+                    .and_then(|value| value.get("name"))
                     .and_then(Value::as_str)
-                    .context("Ollama tool call missing name")?
+                    .unwrap_or_default()
                     .to_owned(),
                 arguments,
-            })
+                argument_error,
+            }
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Vec<_>>();
     let mut output_items = Vec::new();
     if !content.is_empty() {
         output_items.push(json!({
@@ -596,28 +610,25 @@ fn parse_sse_response(sse: &str, model: &str) -> Result<ModelResponse> {
     let tool_calls = output_items
         .iter()
         .filter(|item| item.get("type").and_then(Value::as_str) == Some("function_call"))
-        .map(|item| -> Result<ToolCall> {
-            let arguments = item
-                .get("arguments")
-                .and_then(Value::as_str)
-                .map(serde_json::from_str)
-                .transpose()?
-                .unwrap_or_else(|| json!({}));
-            Ok(ToolCall {
+        .map(|item| {
+            let (arguments, argument_error) =
+                parse_tool_arguments(item.get("arguments"), "OpenAI Codex");
+            ToolCall {
                 call_id: item
                     .get("call_id")
                     .and_then(Value::as_str)
-                    .context("function call missing call_id")?
-                    .to_owned(),
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("openai-{}", Uuid::now_v7())),
                 name: item
                     .get("name")
                     .and_then(Value::as_str)
-                    .context("function call missing name")?
+                    .unwrap_or_default()
                     .to_owned(),
                 arguments,
-            })
+                argument_error,
+            }
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Vec<_>>();
     let usage = response.get("usage").map(parse_usage);
     Ok(ModelResponse {
         content,
@@ -716,6 +727,36 @@ mod tests {
         assert_eq!(response.tool_calls[0].arguments["content"], "hello");
         assert!(response.tool_calls[0].call_id.starts_with("ollama-"));
         assert_eq!(response.usage.unwrap().total_tokens, Some(48));
+    }
+
+    #[test]
+    fn preserves_malformed_tool_arguments_for_model_correction() {
+        let ollama = parse_ollama_response(
+            json!({
+                "message": { "tool_calls": [{ "function": {
+                    "name": "chat__send_message", "arguments": "{not-json"
+                }}] }
+            }),
+            "test",
+        )
+        .unwrap();
+        assert!(
+            ollama.tool_calls[0]
+                .argument_error
+                .as_deref()
+                .unwrap()
+                .contains("invalid JSON")
+        );
+
+        let sse = "data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"function_call\",\"call_id\":\"call\",\"name\":\"chat__send_message\",\"arguments\":\"{not-json\"}],\"usage\":{}}}\n\n";
+        let openai = parse_sse_response(sse, "test").unwrap();
+        assert!(
+            openai.tool_calls[0]
+                .argument_error
+                .as_deref()
+                .unwrap()
+                .contains("invalid JSON")
+        );
     }
 
     #[test]

@@ -16,9 +16,12 @@ class EvalContractTests(unittest.TestCase):
         self.assertEqual({item["id"] for item in fixtures}, {
             "chat-delivery", "cross-session-recall", "tool-discovery", "web-search",
             "multiple-actions", "mixed-delivery", "action-failure", "post-delivery-no-loop",
+            "schema-retry", "schema-exhaustion",
         })
-        self.assertTrue(all(item["live"] and item["max_brave_searches"] <= 20 for item in fixtures))
-        self.assertLessEqual(sum(item["max_brave_searches"] for item in fixtures), 20)
+        live = [item for item in fixtures if item["live"]]
+        self.assertEqual(len(live), 8)
+        self.assertTrue(all(item["max_brave_searches"] <= 20 for item in live))
+        self.assertLessEqual(sum(item["max_brave_searches"] for item in live), 20)
 
     def test_report_escapes_trace_content_and_has_no_external_assets(self):
         report = module("report")

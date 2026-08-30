@@ -116,6 +116,12 @@ injected into advertised schemas and stripped before validation/execution, so ha
 it. Values are `asap` and `batch`; omission defaults to ASAP for one call and batch for multiple calls.
 Invalid values use that same deterministic default.
 
+Core validates every proposed call against the pinned `input_schema` before invoking any handler.
+Action groups are atomic at this boundary: if one call is invalid, none execute and no action events
+are written. The model receives structured call index, tool, instance path, and validation message as
+temporary correction input. It may retry the complete group up to three times. Validation attempts
+and exhaustion are operational logs, not events. Malformed argument JSON and tool names outside the advertised surface follow the same correction path.
+
 ASAP result events enter the durable model inbox individually as execution finishes. Batch results
 do not enter individually; `actions.completed` exposes those results once, in original call order.
 The completion event is always persisted and is enqueued only when batched results exist. Failed

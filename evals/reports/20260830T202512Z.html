@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Habibi eval — 20260830T173454Z</title>
+<title>Habibi eval — 20260830T202512Z</title>
 <style>
 :root{--bg:#0c0d0e;--panel:#151719;--panel2:#1b1e20;--line:#2b3033;--text:#f2efe8;--muted:#9ea6a6;--accent:#d2a85a;--good:#63c58b;--bad:#ef7771}
 *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 85% -10%,#292416 0,transparent 32rem),var(--bg);color:var(--text);font:15px/1.5 ui-sans-serif,system-ui,sans-serif}
@@ -19,13 +19,13 @@ details{margin-top:13px}summary{cursor:pointer;color:var(--muted);font-size:13px
 @media(max-width:820px){.summary{grid-template-columns:repeat(2,1fr)}.fixtures{grid-template-columns:1fr}}@media(max-width:460px){main{width:min(100% - 20px,1120px);padding-top:30px}.summary{grid-template-columns:1fr 1fr}.metric{padding:13px}}
 </style></head><body><main>
 <div class="eyebrow">Habibi · event engine evaluation</div><h1>2/8 tasks passed</h1>
-<p class="subtitle">openai-codex / gpt-5.6-luna · live run · 20260830T173454Z</p>
+<p class="subtitle">openai-codex / gpt-5.6-luna · live run · 20260830T202512Z</p>
 <section class="summary">
 <div class="metric score"><strong>25%</strong><span>pass rate</span><div class="progress"><i></i></div></div>
-<div class="metric"><strong>27,695</strong><span>tokens</span></div><div class="metric"><strong>295.5s</strong><span>fixture time</span></div>
-<div class="metric"><strong>$0.0073</strong><span>estimated cost</span></div><div class="metric"><strong>1</strong><span>Brave searches</span></div>
+<div class="metric"><strong>30,509</strong><span>tokens</span></div><div class="metric"><strong>256.9s</strong><span>fixture time</span></div>
+<div class="metric"><strong>$0.0080</strong><span>estimated cost</span></div><div class="metric"><strong>1</strong><span>Brave searches</span></div>
 </section><div class="section-title"><h2>Fixtures</h2><span class="eyebrow">complete</span></div>
-<section class="fixtures"><article class="fixture pass"><header><div><span class="result-mark">✓</span><h2>chat-delivery</h2></div><span class="pill pass">PASS</span></header><p class="fixture-meta">1 action · 1 model call · 7.2s</p><ul class="assertions"><li class="pass"><span>assistant_exact</span><strong>PASS</strong></li><li class="pass"><span>required_tools</span><strong>PASS</strong></li><li class="pass"><span>max_model_invocations</span><strong>PASS</strong></li><li class="pass"><span>max_brave_searches</span><strong>PASS</strong></li><li class="pass"><span>trace_not_truncated</span><strong>PASS</strong></li></ul><details><summary>Sanitized metrics</summary><pre>{
+<section class="fixtures"><article class="fixture pass"><header><div><span class="result-mark">✓</span><h2>chat-delivery</h2></div><span class="pill pass">PASS</span></header><p class="fixture-meta">1 action · 2 model calls · 11.2s</p><ul class="assertions"><li class="pass"><span>assistant_exact</span><strong>PASS</strong></li><li class="pass"><span>required_tools</span><strong>PASS</strong></li><li class="pass"><span>max_model_invocations</span><strong>PASS</strong></li><li class="pass"><span>max_brave_searches</span><strong>PASS</strong></li><li class="pass"><span>trace_not_truncated</span><strong>PASS</strong></li></ul><details><summary>Sanitized metrics</summary><pre>{
   &quot;fixture_id&quot;: &quot;chat-delivery&quot;,
   &quot;pass&quot;: true,
   &quot;assertions&quot;: [
@@ -50,30 +50,32 @@ details{margin-top:13px}summary{cursor:pointer;color:var(--muted);font-size:13px
       &quot;pass&quot;: true
     }
   ],
-  &quot;duration_ms&quot;: 7205,
-  &quot;model_invocations&quot;: 1,
+  &quot;duration_ms&quot;: 11220,
+  &quot;model_invocations&quot;: 2,
   &quot;usage&quot;: {
-    &quot;input&quot;: 990,
-    &quot;output&quot;: 52,
+    &quot;input&quot;: 2242,
+    &quot;output&quot;: 139,
     &quot;cache_read&quot;: 0,
     &quot;cache_write&quot;: 0,
-    &quot;total_tokens&quot;: 1042
+    &quot;total_tokens&quot;: 2381
   },
-  &quot;estimated_cost_usd&quot;: 0.0002604,
+  &quot;estimated_cost_usd&quot;: 0.0006152,
   &quot;cost_known&quot;: true,
   &quot;brave_searches&quot;: 0,
+  &quot;validation_failures&quot;: 0,
+  &quot;validation_exhaustions&quot;: 0,
   &quot;actions&quot;: [
     {
-      &quot;event_id&quot;: &quot;01a053bd-24e9-7f92-8e1e-e75de21bcde4&quot;,
-      &quot;sequence&quot;: 8,
+      &quot;event_id&quot;: &quot;01a05459-12e9-7ba0-a68c-7a0376a19564&quot;,
+      &quot;sequence&quot;: 5,
       &quot;tool&quot;: &quot;chat.send_message&quot;,
       &quot;status&quot;: &quot;succeeded&quot;,
       &quot;delivery_mode&quot;: &quot;asap&quot;,
-      &quot;action_group_id&quot;: &quot;01a053bd-24d1-77f2-a7f3-d724d530ce46&quot;,
+      &quot;action_group_id&quot;: &quot;01a05459-12d3-7010-a1de-de903b2432af&quot;,
       &quot;index&quot;: 0
     }
   ]
-}</pre></details></article><article class="fixture fail"><header><div><span class="result-mark">×</span><h2>cross-session-recall</h2></div><span class="pill fail">FAIL</span></header><p class="fixture-meta">3 actions · 5 model calls · 61.3s</p><ul class="assertions"><li class="fail"><span>assistant_exact</span><strong>FAIL</strong></li><li class="pass"><span>required_tools</span><strong>PASS</strong></li><li class="pass"><span>max_model_invocations</span><strong>PASS</strong></li><li class="pass"><span>max_brave_searches</span><strong>PASS</strong></li><li class="pass"><span>trace_not_truncated</span><strong>PASS</strong></li></ul><details><summary>Sanitized metrics</summary><pre>{
+}</pre></details></article><article class="fixture fail"><header><div><span class="result-mark">×</span><h2>cross-session-recall</h2></div><span class="pill fail">FAIL</span></header><p class="fixture-meta">3 actions · 5 model calls · 61.4s</p><ul class="assertions"><li class="fail"><span>assistant_exact</span><strong>FAIL</strong></li><li class="pass"><span>required_tools</span><strong>PASS</strong></li><li class="pass"><span>max_model_invocations</span><strong>PASS</strong></li><li class="pass"><span>max_brave_searches</span><strong>PASS</strong></li><li class="pass"><span>trace_not_truncated</span><strong>PASS</strong></li></ul><details><summary>Sanitized metrics</summary><pre>{
   &quot;fixture_id&quot;: &quot;cross-session-recall&quot;,
   &quot;pass&quot;: false,
   &quot;assertions&quot;: [
@@ -98,48 +100,50 @@ details{margin-top:13px}summary{cursor:pointer;color:var(--muted);font-size:13px
       &quot;pass&quot;: true
     }
   ],
-  &quot;duration_ms&quot;: 61328,
+  &quot;duration_ms&quot;: 61413,
   &quot;model_invocations&quot;: 5,
   &quot;usage&quot;: {
-    &quot;input&quot;: 5402,
-    &quot;output&quot;: 280,
+    &quot;input&quot;: 5703,
+    &quot;output&quot;: 299,
     &quot;cache_read&quot;: 0,
     &quot;cache_write&quot;: 0,
-    &quot;total_tokens&quot;: 5682
+    &quot;total_tokens&quot;: 6002
   },
-  &quot;estimated_cost_usd&quot;: 0.0014164,
+  &quot;estimated_cost_usd&quot;: 0.0014994000000000001,
   &quot;cost_known&quot;: true,
   &quot;brave_searches&quot;: 0,
+  &quot;validation_failures&quot;: 0,
+  &quot;validation_exhaustions&quot;: 0,
   &quot;actions&quot;: [
     {
-      &quot;event_id&quot;: &quot;01a053bd-516c-7423-8042-8efef965f175&quot;,
+      &quot;event_id&quot;: &quot;01a05459-4461-7352-af82-4e1bfa32f641&quot;,
       &quot;sequence&quot;: 12,
       &quot;tool&quot;: &quot;chat.search_messages&quot;,
       &quot;status&quot;: &quot;succeeded&quot;,
       &quot;delivery_mode&quot;: &quot;asap&quot;,
-      &quot;action_group_id&quot;: &quot;01a053bd-5156-76c3-8f14-2e90e0d160ac&quot;,
+      &quot;action_group_id&quot;: &quot;01a05459-444a-7bc1-a2ed-c83f164f9a22&quot;,
       &quot;index&quot;: 0
     },
     {
-      &quot;event_id&quot;: &quot;01a053bd-6cd1-7b91-aeda-54cff5b43048&quot;,
+      &quot;event_id&quot;: &quot;01a05459-6a4c-7891-a973-ca62003cec48&quot;,
       &quot;sequence&quot;: 16,
       &quot;tool&quot;: &quot;chat.send_message&quot;,
       &quot;status&quot;: &quot;succeeded&quot;,
       &quot;delivery_mode&quot;: &quot;asap&quot;,
-      &quot;action_group_id&quot;: &quot;01a053bd-6cb4-7402-b23e-6b24adca9151&quot;,
+      &quot;action_group_id&quot;: &quot;01a05459-6a35-78c1-82c8-4eba4c8579d3&quot;,
       &quot;index&quot;: 0
     },
     {
-      &quot;event_id&quot;: &quot;01a053bd-3e60-7c12-8432-cb3a5a7423b4&quot;,
+      &quot;event_id&quot;: &quot;01a05459-317a-7522-b687-c828fc3364b0&quot;,
       &quot;sequence&quot;: 6,
       &quot;tool&quot;: &quot;chat.send_message&quot;,
       &quot;status&quot;: &quot;succeeded&quot;,
       &quot;delivery_mode&quot;: &quot;asap&quot;,
-      &quot;action_group_id&quot;: &quot;01a053bd-3e48-7783-8639-faf1a3f39586&quot;,
+      &quot;action_group_id&quot;: &quot;01a05459-3164-7b20-9246-aa1a50d56855&quot;,
       &quot;index&quot;: 0
     }
   ]
-}</pre></details></article><article class="fixture fail"><header><div><span class="result-mark">×</span><h2>tool-discovery</h2></div><span class="pill fail">FAIL</span></header><p class="fixture-meta">1 action · 2 model calls · 60.3s</p><ul class="assertions"><li class="fail"><span>assistant_exact</span><strong>FAIL</strong></li><li class="fail"><span>required_tools</span><strong>FAIL</strong></li><li class="pass"><span>max_model_invocations</span><strong>PASS</strong></li><li class="pass"><span>max_brave_searches</span><strong>PASS</strong></li><li class="pass"><span>trace_not_truncated</span><strong>PASS</strong></li></ul><details><summary>Sanitized metrics</summary><pre>{
+}</pre></details></article><article class="fixture fail"><header><div><span class="result-mark">×</span><h2>tool-discovery</h2></div><span class="pill fail">FAIL</span></header><p class="fixture-meta">2 actions · 3 model calls · 18.3s</p><ul class="assertions"><li class="fail"><span>assistant_exact</span><strong>FAIL</strong></li><li class="fail"><span>required_tools</span><strong>FAIL</strong></li><li class="pass"><span>max_model_invocations</span><strong>PASS</strong></li><li class="pass"><span>max_brave_searches</span><strong>PASS</strong></li><li class="pass"><span>trace_not_truncated</span><strong>PASS</strong></li></ul><details><summary>Sanitized metrics</summary><pre>{
   &quot;fixture_id&quot;: &quot;tool-discovery&quot;,
   &quot;pass&quot;: false,
   &quot;assertions&quot;: [
@@ -164,30 +168,41 @@ details{margin-top:13px}summary{cursor:pointer;color:var(--muted);font-size:13px
       &quot;pass&quot;: true
     }
   ],
-  &quot;duration_ms&quot;: 60337,
-  &quot;model_invocations&quot;: 2,
+  &quot;duration_ms&quot;: 18303,
+  &quot;model_invocations&quot;: 3,
   &quot;usage&quot;: {
-    &quot;input&quot;: 3443,
-    &quot;output&quot;: 314,
+    &quot;input&quot;: 5274,
+    &quot;output&quot;: 275,
     &quot;cache_read&quot;: 0,
     &quot;cache_write&quot;: 0,
-    &quot;total_tokens&quot;: 3757
+    &quot;total_tokens&quot;: 5549
   },
-  &quot;estimated_cost_usd&quot;: 0.0010654000000000002,
+  &quot;estimated_cost_usd&quot;: 0.0013848,
   &quot;cost_known&quot;: true,
   &quot;brave_searches&quot;: 0,
+  &quot;validation_failures&quot;: 0,
+  &quot;validation_exhaustions&quot;: 0,
   &quot;actions&quot;: [
     {
-      &quot;event_id&quot;: &quot;01a053be-31a2-72d1-a25b-1c08d9ba9c94&quot;,
+      &quot;event_id&quot;: &quot;01a0545a-3312-7cd3-917c-0ed72201e3ec&quot;,
       &quot;sequence&quot;: 7,
       &quot;tool&quot;: &quot;habibi.tools.search&quot;,
       &quot;status&quot;: &quot;succeeded&quot;,
       &quot;delivery_mode&quot;: &quot;asap&quot;,
-      &quot;action_group_id&quot;: &quot;01a053be-3190-7be3-a003-396ee8408621&quot;,
+      &quot;action_group_id&quot;: &quot;01a0545a-3300-7c80-9a2b-5c745ef3547c&quot;,
+      &quot;index&quot;: 0
+    },
+    {
+      &quot;event_id&quot;: &quot;01a0545a-4a6c-7150-a5cb-e5f3a0d0855c&quot;,
+      &quot;sequence&quot;: 11,
+      &quot;tool&quot;: &quot;chat.send_message&quot;,
+      &quot;status&quot;: &quot;succeeded&quot;,
+      &quot;delivery_mode&quot;: &quot;asap&quot;,
+      &quot;action_group_id&quot;: &quot;01a0545a-4a55-7372-a360-f18311670972&quot;,
       &quot;index&quot;: 0
     }
   ]
-}</pre></details></article><article class="fixture fail"><header><div><span class="result-mark">×</span><h2>web-search</h2></div><span class="pill fail">FAIL</span></header><p class="fixture-meta">1 action · 2 model calls · 60.3s</p><ul class="assertions"><li class="fail"><span>assistant_exact</span><strong>FAIL</strong></li><li class="fail"><span>required_tools</span><strong>FAIL</strong></li><li class="pass"><span>max_model_invocations</span><strong>PASS</strong></li><li class="pass"><span>max_brave_searches</span><strong>PASS</strong></li><li class="pass"><span>trace_not_truncated</span><strong>PASS</strong></li></ul><details><summary>Sanitized metrics</summary><pre>{
+}</pre></details></article><article class="fixture fail"><header><div><span class="result-mark">×</span><h2>web-search</h2></div><span class="pill fail">FAIL</span></header><p class="fixture-meta">1 action · 2 model calls · 60.4s</p><ul class="assertions"><li class="fail"><span>assistant_exact</span><strong>FAIL</strong></li><li class="fail"><span>required_tools</span><strong>FAIL</strong></li><li class="pass"><span>max_model_invocations</span><strong>PASS</strong></li><li class="pass"><span>max_brave_searches</span><strong>PASS</strong></li><li class="pass"><span>trace_not_truncated</span><strong>PASS</strong></li></ul><details><summary>Sanitized metrics</summary><pre>{
   &quot;fixture_id&quot;: &quot;web-search&quot;,
   &quot;pass&quot;: false,
   &quot;assertions&quot;: [
@@ -212,30 +227,32 @@ details{margin-top:13px}summary{cursor:pointer;color:var(--muted);font-size:13px
       &quot;pass&quot;: true
     }
   ],
-  &quot;duration_ms&quot;: 60333,
+  &quot;duration_ms&quot;: 60412,
   &quot;model_invocations&quot;: 2,
   &quot;usage&quot;: {
-    &quot;input&quot;: 1861,
-    &quot;output&quot;: 139,
+    &quot;input&quot;: 1949,
+    &quot;output&quot;: 165,
     &quot;cache_read&quot;: 0,
     &quot;cache_write&quot;: 0,
-    &quot;total_tokens&quot;: 2000
+    &quot;total_tokens&quot;: 2114
   },
-  &quot;estimated_cost_usd&quot;: 0.0005390000000000001,
+  &quot;estimated_cost_usd&quot;: 0.0005878000000000001,
   &quot;cost_known&quot;: true,
   &quot;brave_searches&quot;: 1,
+  &quot;validation_failures&quot;: 0,
+  &quot;validation_exhaustions&quot;: 0,
   &quot;actions&quot;: [
     {
-      &quot;event_id&quot;: &quot;01a053bf-1c75-7b70-b997-db381c61df1d&quot;,
+      &quot;event_id&quot;: &quot;01a0545a-7009-7970-a8e8-441fafe78fd6&quot;,
       &quot;sequence&quot;: 7,
       &quot;tool&quot;: &quot;web-search.search&quot;,
       &quot;status&quot;: &quot;succeeded&quot;,
       &quot;delivery_mode&quot;: &quot;asap&quot;,
-      &quot;action_group_id&quot;: &quot;01a053bf-1b1b-79f2-ad7b-c68c4d525ad7&quot;,
+      &quot;action_group_id&quot;: &quot;01a0545a-6ec9-7451-9571-aa27396240d9&quot;,
       &quot;index&quot;: 0
     }
   ]
-}</pre></details></article><article class="fixture fail"><header><div><span class="result-mark">×</span><h2>multiple-actions</h2></div><span class="pill fail">FAIL</span></header><p class="fixture-meta">2 actions · 3 model calls · 60.4s</p><ul class="assertions"><li class="fail"><span>assistant_exact</span><strong>FAIL</strong></li><li class="fail"><span>required_tools</span><strong>FAIL</strong></li><li class="pass"><span>max_model_invocations</span><strong>PASS</strong></li><li class="pass"><span>max_brave_searches</span><strong>PASS</strong></li><li class="pass"><span>trace_not_truncated</span><strong>PASS</strong></li><li class="pass"><span>minimum_group_size</span><strong>PASS</strong></li></ul><details><summary>Sanitized metrics</summary><pre>{
+}</pre></details></article><article class="fixture fail"><header><div><span class="result-mark">×</span><h2>multiple-actions</h2></div><span class="pill fail">FAIL</span></header><p class="fixture-meta">2 actions · 3 model calls · 21.1s</p><ul class="assertions"><li class="fail"><span>assistant_exact</span><strong>FAIL</strong></li><li class="fail"><span>required_tools</span><strong>FAIL</strong></li><li class="pass"><span>max_model_invocations</span><strong>PASS</strong></li><li class="pass"><span>max_brave_searches</span><strong>PASS</strong></li><li class="pass"><span>trace_not_truncated</span><strong>PASS</strong></li><li class="pass"><span>minimum_group_size</span><strong>PASS</strong></li></ul><details><summary>Sanitized metrics</summary><pre>{
   &quot;fixture_id&quot;: &quot;multiple-actions&quot;,
   &quot;pass&quot;: false,
   &quot;assertions&quot;: [
@@ -264,39 +281,41 @@ details{margin-top:13px}summary{cursor:pointer;color:var(--muted);font-size:13px
       &quot;pass&quot;: true
     }
   ],
-  &quot;duration_ms&quot;: 60381,
+  &quot;duration_ms&quot;: 21069,
   &quot;model_invocations&quot;: 3,
   &quot;usage&quot;: {
-    &quot;input&quot;: 3248,
-    &quot;output&quot;: 303,
+    &quot;input&quot;: 3351,
+    &quot;output&quot;: 330,
     &quot;cache_read&quot;: 0,
     &quot;cache_write&quot;: 0,
-    &quot;total_tokens&quot;: 3551
+    &quot;total_tokens&quot;: 3681
   },
-  &quot;estimated_cost_usd&quot;: 0.0010132000000000001,
+  &quot;estimated_cost_usd&quot;: 0.0010662000000000002,
   &quot;cost_known&quot;: true,
   &quot;brave_searches&quot;: 0,
+  &quot;validation_failures&quot;: 0,
+  &quot;validation_exhaustions&quot;: 0,
   &quot;actions&quot;: [
     {
-      &quot;event_id&quot;: &quot;01a053c0-22e1-78d3-95c8-82eea1e6dd67&quot;,
+      &quot;event_id&quot;: &quot;01a0545b-715d-7ca3-bbc6-e3b9b63f0d88&quot;,
       &quot;sequence&quot;: 8,
       &quot;tool&quot;: &quot;eval.immediate&quot;,
       &quot;status&quot;: &quot;succeeded&quot;,
       &quot;delivery_mode&quot;: &quot;asap&quot;,
-      &quot;action_group_id&quot;: &quot;01a053c0-22c9-7dd0-84aa-5ad5228e402f&quot;,
+      &quot;action_group_id&quot;: &quot;01a0545b-7145-7672-aa12-4716fbcc03f5&quot;,
       &quot;index&quot;: 0
     },
     {
-      &quot;event_id&quot;: &quot;01a053c0-22ec-7301-9a89-395346394425&quot;,
+      &quot;event_id&quot;: &quot;01a0545b-7168-71c1-b462-a11fdeabfa63&quot;,
       &quot;sequence&quot;: 9,
       &quot;tool&quot;: &quot;eval.immediate&quot;,
       &quot;status&quot;: &quot;succeeded&quot;,
       &quot;delivery_mode&quot;: &quot;asap&quot;,
-      &quot;action_group_id&quot;: &quot;01a053c0-22c9-7dd0-84aa-5ad5228e402f&quot;,
+      &quot;action_group_id&quot;: &quot;01a0545b-7145-7672-aa12-4716fbcc03f5&quot;,
       &quot;index&quot;: 1
     }
   ]
-}</pre></details></article><article class="fixture fail"><header><div><span class="result-mark">×</span><h2>mixed-delivery</h2></div><span class="pill fail">FAIL</span></header><p class="fixture-meta">5 actions · 4 model calls · 19.9s</p><ul class="assertions"><li class="fail"><span>assistant_exact</span><strong>FAIL</strong></li><li class="pass"><span>required_tools</span><strong>PASS</strong></li><li class="pass"><span>max_model_invocations</span><strong>PASS</strong></li><li class="pass"><span>max_brave_searches</span><strong>PASS</strong></li><li class="pass"><span>trace_not_truncated</span><strong>PASS</strong></li><li class="pass"><span>minimum_group_size</span><strong>PASS</strong></li><li class="pass"><span>delivery_modes</span><strong>PASS</strong></li></ul><details><summary>Sanitized metrics</summary><pre>{
+}</pre></details></article><article class="fixture fail"><header><div><span class="result-mark">×</span><h2>mixed-delivery</h2></div><span class="pill fail">FAIL</span></header><p class="fixture-meta">4 actions · 3 model calls · 60.4s</p><ul class="assertions"><li class="fail"><span>assistant_exact</span><strong>FAIL</strong></li><li class="fail"><span>required_tools</span><strong>FAIL</strong></li><li class="pass"><span>max_model_invocations</span><strong>PASS</strong></li><li class="pass"><span>max_brave_searches</span><strong>PASS</strong></li><li class="pass"><span>trace_not_truncated</span><strong>PASS</strong></li><li class="pass"><span>minimum_group_size</span><strong>PASS</strong></li><li class="pass"><span>delivery_modes</span><strong>PASS</strong></li></ul><details><summary>Sanitized metrics</summary><pre>{
   &quot;fixture_id&quot;: &quot;mixed-delivery&quot;,
   &quot;pass&quot;: false,
   &quot;assertions&quot;: [
@@ -306,7 +325,7 @@ details{margin-top:13px}summary{cursor:pointer;color:var(--muted);font-size:13px
     },
     {
       &quot;name&quot;: &quot;required_tools&quot;,
-      &quot;pass&quot;: true
+      &quot;pass&quot;: false
     },
     {
       &quot;name&quot;: &quot;max_model_invocations&quot;,
@@ -329,66 +348,59 @@ details{margin-top:13px}summary{cursor:pointer;color:var(--muted);font-size:13px
       &quot;pass&quot;: true
     }
   ],
-  &quot;duration_ms&quot;: 19925,
-  &quot;model_invocations&quot;: 4,
+  &quot;duration_ms&quot;: 60383,
+  &quot;model_invocations&quot;: 3,
   &quot;usage&quot;: {
-    &quot;input&quot;: 5801,
-    &quot;output&quot;: 393,
+    &quot;input&quot;: 4723,
+    &quot;output&quot;: 370,
     &quot;cache_read&quot;: 0,
     &quot;cache_write&quot;: 0,
-    &quot;total_tokens&quot;: 6194
+    &quot;total_tokens&quot;: 5093
   },
-  &quot;estimated_cost_usd&quot;: 0.0016317999999999999,
+  &quot;estimated_cost_usd&quot;: 0.0013886,
   &quot;cost_known&quot;: true,
   &quot;brave_searches&quot;: 0,
+  &quot;validation_failures&quot;: 0,
+  &quot;validation_exhaustions&quot;: 0,
   &quot;actions&quot;: [
     {
-      &quot;event_id&quot;: &quot;01a053c0-fb5a-7fd1-994d-50f9ec03e865&quot;,
+      &quot;event_id&quot;: &quot;01a0545b-b651-71b3-b64f-55a7f87e7b5d&quot;,
       &quot;sequence&quot;: 10,
       &quot;tool&quot;: &quot;eval.immediate&quot;,
       &quot;status&quot;: &quot;succeeded&quot;,
       &quot;delivery_mode&quot;: &quot;asap&quot;,
-      &quot;action_group_id&quot;: &quot;01a053c0-fb37-76a1-b0a4-f65a85a6a544&quot;,
+      &quot;action_group_id&quot;: &quot;01a0545b-b62e-7260-ade1-a347a7a19a07&quot;,
       &quot;index&quot;: 0
     },
     {
-      &quot;event_id&quot;: &quot;01a053c0-fb65-7680-9c53-774edcde9475&quot;,
+      &quot;event_id&quot;: &quot;01a0545b-b65d-7fc3-bd74-bc7a9a596e41&quot;,
       &quot;sequence&quot;: 11,
       &quot;tool&quot;: &quot;eval.fail&quot;,
       &quot;status&quot;: &quot;failed&quot;,
       &quot;delivery_mode&quot;: &quot;batch&quot;,
-      &quot;action_group_id&quot;: &quot;01a053c0-fb37-76a1-b0a4-f65a85a6a544&quot;,
+      &quot;action_group_id&quot;: &quot;01a0545b-b62e-7260-ade1-a347a7a19a07&quot;,
       &quot;index&quot;: 2
     },
     {
-      &quot;event_id&quot;: &quot;01a053c0-fb70-7c10-9f05-5f3d3cea7d39&quot;,
+      &quot;event_id&quot;: &quot;01a0545b-b668-78f0-82f2-96ff391f7383&quot;,
       &quot;sequence&quot;: 13,
       &quot;tool&quot;: &quot;eval.marker&quot;,
       &quot;status&quot;: &quot;succeeded&quot;,
       &quot;delivery_mode&quot;: &quot;batch&quot;,
-      &quot;action_group_id&quot;: &quot;01a053c0-fb37-76a1-b0a4-f65a85a6a544&quot;,
+      &quot;action_group_id&quot;: &quot;01a0545b-b62e-7260-ade1-a347a7a19a07&quot;,
       &quot;index&quot;: 1
     },
     {
-      &quot;event_id&quot;: &quot;01a053c0-fb7b-7f10-a7cd-404910c21323&quot;,
+      &quot;event_id&quot;: &quot;01a0545b-b673-79c0-a620-8f6fb91b7714&quot;,
       &quot;sequence&quot;: 14,
       &quot;tool&quot;: &quot;eval.malformed&quot;,
       &quot;status&quot;: &quot;failed&quot;,
       &quot;delivery_mode&quot;: &quot;batch&quot;,
-      &quot;action_group_id&quot;: &quot;01a053c0-fb37-76a1-b0a4-f65a85a6a544&quot;,
+      &quot;action_group_id&quot;: &quot;01a0545b-b62e-7260-ade1-a347a7a19a07&quot;,
       &quot;index&quot;: 3
-    },
-    {
-      &quot;event_id&quot;: &quot;01a053c1-1b80-73f1-abee-cdf9ca0ad076&quot;,
-      &quot;sequence&quot;: 18,
-      &quot;tool&quot;: &quot;chat.send_message&quot;,
-      &quot;status&quot;: &quot;succeeded&quot;,
-      &quot;delivery_mode&quot;: &quot;asap&quot;,
-      &quot;action_group_id&quot;: &quot;01a053c1-1b68-7d30-b2d0-deb791886342&quot;,
-      &quot;index&quot;: 0
     }
   ]
-}</pre></details></article><article class="fixture fail"><header><div><span class="result-mark">×</span><h2>action-failure</h2></div><span class="pill fail">FAIL</span></header><p class="fixture-meta">2 actions · 3 model calls · 16.9s</p><ul class="assertions"><li class="fail"><span>assistant_exact</span><strong>FAIL</strong></li><li class="pass"><span>required_tools</span><strong>PASS</strong></li><li class="pass"><span>max_model_invocations</span><strong>PASS</strong></li><li class="pass"><span>max_brave_searches</span><strong>PASS</strong></li><li class="pass"><span>trace_not_truncated</span><strong>PASS</strong></li><li class="pass"><span>action_failure_observed</span><strong>PASS</strong></li></ul><details><summary>Sanitized metrics</summary><pre>{
+}</pre></details></article><article class="fixture fail"><header><div><span class="result-mark">×</span><h2>action-failure</h2></div><span class="pill fail">FAIL</span></header><p class="fixture-meta">2 actions · 3 model calls · 16.0s</p><ul class="assertions"><li class="fail"><span>assistant_exact</span><strong>FAIL</strong></li><li class="pass"><span>required_tools</span><strong>PASS</strong></li><li class="pass"><span>max_model_invocations</span><strong>PASS</strong></li><li class="pass"><span>max_brave_searches</span><strong>PASS</strong></li><li class="pass"><span>trace_not_truncated</span><strong>PASS</strong></li><li class="pass"><span>action_failure_observed</span><strong>PASS</strong></li></ul><details><summary>Sanitized metrics</summary><pre>{
   &quot;fixture_id&quot;: &quot;action-failure&quot;,
   &quot;pass&quot;: false,
   &quot;assertions&quot;: [
@@ -417,39 +429,41 @@ details{margin-top:13px}summary{cursor:pointer;color:var(--muted);font-size:13px
       &quot;pass&quot;: true
     }
   ],
-  &quot;duration_ms&quot;: 16941,
+  &quot;duration_ms&quot;: 15981,
   &quot;model_invocations&quot;: 3,
   &quot;usage&quot;: {
-    &quot;input&quot;: 3386,
-    &quot;output&quot;: 180,
+    &quot;input&quot;: 3506,
+    &quot;output&quot;: 194,
     &quot;cache_read&quot;: 0,
     &quot;cache_write&quot;: 0,
-    &quot;total_tokens&quot;: 3566
+    &quot;total_tokens&quot;: 3700
   },
-  &quot;estimated_cost_usd&quot;: 0.0008932,
+  &quot;estimated_cost_usd&quot;: 0.0009339999999999999,
   &quot;cost_known&quot;: true,
   &quot;brave_searches&quot;: 0,
+  &quot;validation_failures&quot;: 0,
+  &quot;validation_exhaustions&quot;: 0,
   &quot;actions&quot;: [
     {
-      &quot;event_id&quot;: &quot;01a053c1-4283-7a33-9801-1020abde62ee&quot;,
+      &quot;event_id&quot;: &quot;01a0545c-9b82-7a83-b43f-192ce2c0e2fe&quot;,
       &quot;sequence&quot;: 7,
       &quot;tool&quot;: &quot;eval.fail&quot;,
       &quot;status&quot;: &quot;failed&quot;,
       &quot;delivery_mode&quot;: &quot;asap&quot;,
-      &quot;action_group_id&quot;: &quot;01a053c1-4271-7701-848e-e535b26cb26e&quot;,
+      &quot;action_group_id&quot;: &quot;01a0545c-9b6e-71b1-bce1-ed012460af2b&quot;,
       &quot;index&quot;: 0
     },
     {
-      &quot;event_id&quot;: &quot;01a053c1-5c3e-7d10-8123-dc855fb49c9d&quot;,
+      &quot;event_id&quot;: &quot;01a0545c-b2d9-7b31-b8c0-6954f181dee7&quot;,
       &quot;sequence&quot;: 11,
       &quot;tool&quot;: &quot;chat.send_message&quot;,
       &quot;status&quot;: &quot;succeeded&quot;,
       &quot;delivery_mode&quot;: &quot;asap&quot;,
-      &quot;action_group_id&quot;: &quot;01a053c1-5c27-78b2-8039-5973546bec75&quot;,
+      &quot;action_group_id&quot;: &quot;01a0545c-b2bd-7f13-9668-a2d290c3d917&quot;,
       &quot;index&quot;: 0
     }
   ]
-}</pre></details></article><article class="fixture pass"><header><div><span class="result-mark">✓</span><h2>post-delivery-no-loop</h2></div><span class="pill pass">PASS</span></header><p class="fixture-meta">1 action · 2 model calls · 9.1s</p><ul class="assertions"><li class="pass"><span>assistant_exact</span><strong>PASS</strong></li><li class="pass"><span>required_tools</span><strong>PASS</strong></li><li class="pass"><span>max_model_invocations</span><strong>PASS</strong></li><li class="pass"><span>max_brave_searches</span><strong>PASS</strong></li><li class="pass"><span>trace_not_truncated</span><strong>PASS</strong></li></ul><details><summary>Sanitized metrics</summary><pre>{
+}</pre></details></article><article class="fixture pass"><header><div><span class="result-mark">✓</span><h2>post-delivery-no-loop</h2></div><span class="pill pass">PASS</span></header><p class="fixture-meta">1 action · 2 model calls · 8.1s</p><ul class="assertions"><li class="pass"><span>assistant_exact</span><strong>PASS</strong></li><li class="pass"><span>required_tools</span><strong>PASS</strong></li><li class="pass"><span>max_model_invocations</span><strong>PASS</strong></li><li class="pass"><span>max_brave_searches</span><strong>PASS</strong></li><li class="pass"><span>trace_not_truncated</span><strong>PASS</strong></li></ul><details><summary>Sanitized metrics</summary><pre>{
   &quot;fixture_id&quot;: &quot;post-delivery-no-loop&quot;,
   &quot;pass&quot;: true,
   &quot;assertions&quot;: [
@@ -474,26 +488,28 @@ details{margin-top:13px}summary{cursor:pointer;color:var(--muted);font-size:13px
       &quot;pass&quot;: true
     }
   ],
-  &quot;duration_ms&quot;: 9071,
+  &quot;duration_ms&quot;: 8136,
   &quot;model_invocations&quot;: 2,
   &quot;usage&quot;: {
-    &quot;input&quot;: 1788,
-    &quot;output&quot;: 115,
+    &quot;input&quot;: 1877,
+    &quot;output&quot;: 112,
     &quot;cache_read&quot;: 0,
     &quot;cache_write&quot;: 0,
-    &quot;total_tokens&quot;: 1903
+    &quot;total_tokens&quot;: 1989
   },
-  &quot;estimated_cost_usd&quot;: 0.0004955999999999999,
+  &quot;estimated_cost_usd&quot;: 0.0005098,
   &quot;cost_known&quot;: true,
   &quot;brave_searches&quot;: 0,
+  &quot;validation_failures&quot;: 0,
+  &quot;validation_exhaustions&quot;: 0,
   &quot;actions&quot;: [
     {
-      &quot;event_id&quot;: &quot;01a053c1-84fd-7730-9dfd-953b3ccea7d6&quot;,
+      &quot;event_id&quot;: &quot;01a0545c-d529-78f2-9a4f-5dee90a72df3&quot;,
       &quot;sequence&quot;: 5,
       &quot;tool&quot;: &quot;chat.send_message&quot;,
       &quot;status&quot;: &quot;succeeded&quot;,
       &quot;delivery_mode&quot;: &quot;asap&quot;,
-      &quot;action_group_id&quot;: &quot;01a053c1-84e6-7520-a6fb-564ebe5196c9&quot;,
+      &quot;action_group_id&quot;: &quot;01a0545c-d514-7e32-aaba-2f61d65614ba&quot;,
       &quot;index&quot;: 0
     }
   ]
@@ -515,18 +531,18 @@ details{margin-top:13px}summary{cursor:pointer;color:var(--muted);font-size:13px
   ],
   &quot;platform&quot;: &quot;Linux-7.1.8-arch1-3-x86_64-with-glibc2.44&quot;,
   &quot;python&quot;: &quot;3.14.7 (main, Aug 10 2026, 07:46:56) [GCC 16.1.1 20260728]&quot;,
-  &quot;binary_sha256&quot;: &quot;c3f325315f1abf18a36509f0c094fda90cefb8c2056a9936f0984e67a2d7adf0&quot;,
+  &quot;binary_sha256&quot;: &quot;ba6cb89b16ed1e2cbcaf6d3a9a264f0fe5e08085fab2435761c7cdbb03dcbe95&quot;,
   &quot;input_sha256&quot;: {
-    &quot;evals/fixtures.json&quot;: &quot;4df808fb4753eb636e669d5eb21ac40fd92a1e202d1c97490c1c40e05d41eca6&quot;,
-    &quot;evals/run.py&quot;: &quot;12c1fa2f98c8c3536e11c00753b891fff200d30c1bdf2a1669e1b91e9692fb64&quot;,
+    &quot;evals/fixtures.json&quot;: &quot;4bb7cfa483c7be2945c37c19755911e65b66eb1bf9e9ef90dd2098106f8531d0&quot;,
+    &quot;evals/run.py&quot;: &quot;e35fd75a0b802a9cac47bfa504b8feeca47c8e1918bdfcd35e49a255f76510e8&quot;,
     &quot;evals/report.py&quot;: &quot;c54693f6801b8bf138ac324f16390e1d4902e09861e60510849f37296878a70a&quot;,
-    &quot;evals/fake_ollama.py&quot;: &quot;f05f03aedde2939641ecc90fbff69337696a0c2c15d5fd055d92be015ac3c19b&quot;,
+    &quot;evals/fake_ollama.py&quot;: &quot;fea97c67fac534185e25825a8d33140c09027f86285375000a053cb06f239b79&quot;,
     &quot;evals/extensions/eval-fixtures&quot;: &quot;f094399823f24daac1a27fc29c99cce8d5e01bba998cc6409c8a42b33fe914d7&quot;,
-    &quot;extensions/chat&quot;: &quot;cf723c9b93b3d13aac5a1b6c654146200ee578a7b5db57e2383560e7fc8baa94&quot;,
-    &quot;extensions/web-search&quot;: &quot;6e9b234cb98ea0d509f4abd1794a57c8cabf0483ccaa9b7c2d923a9fdf9636af&quot;,
+    &quot;extensions/chat&quot;: &quot;bf9c56f23c3a55101d3203302546914c8544f036699fd55645e1e7a2ce159beb&quot;,
+    &quot;extensions/web-search&quot;: &quot;11f4236af7a918f26b6771f5ad3074339721525b49d5c3adfaeeb1f6effe088a&quot;,
     &quot;model-catalog.json&quot;: &quot;22bfc0a4830f84a6d22c5c92c78636b9f36ae9de96670dd847efc5a0949fdd11&quot;
   },
-  &quot;git_sha&quot;: &quot;5595b82cd0a057c920838a64d5fbc3105c1fc00b&quot;,
+  &quot;git_sha&quot;: &quot;5f6573c5c2fbcf7cff1b2ec459d26f7e12147b6f&quot;,
   &quot;git_dirty&quot;: true,
   &quot;extension_inputs_tracked&quot;: false,
   &quot;reproducible&quot;: false,

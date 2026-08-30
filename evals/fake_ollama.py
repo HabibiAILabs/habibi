@@ -12,6 +12,8 @@ EXPECTED = {
     "mixed-delivery": "mixed ok",
     "action-failure": "recovered",
     "post-delivery-no-loop": "delivered once",
+    "schema-retry": "schema retry ok",
+    "schema-exhaustion": None,
 }
 
 
@@ -31,6 +33,20 @@ def current_event(body):
         if isinstance(value, dict) and isinstance(value.get("current_event"), dict):
             return value["current_event"]
     return {}
+
+
+def has_validation_feedback(body):
+    for message in body.get("messages", []):
+        content = message.get("content")
+        if not isinstance(content, str):
+            continue
+        try:
+            value = json.loads(content)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict) and value.get("type") == "tool_call_validation.failed":
+            return True
+    return False
 
 
 def scripted_calls(fixture, event):
@@ -92,7 +108,13 @@ class Handler(BaseHTTPRequestHandler):
             self.json_response({"capabilities": ["tools"], "model_info": {}})
             return
         if self.path.rstrip("/") == "/api/chat":
-            calls = scripted_calls(self.fixture, current_event(body))
+            event = current_event(body)
+            if self.fixture == "schema-exhaustion" and event.get("event_type") in {"chat.session.started", "chat.message.created"}:
+                calls = [tool("chat.send_message", {"content": "never dispatched"}, "invalid")]
+            elif self.fixture == "schema-retry" and event.get("event_type") in {"chat.session.started", "chat.message.created"} and not has_validation_feedback(body):
+                calls = [tool("chat.send_message", {"content": EXPECTED[self.fixture]}, "invalid")]
+            else:
+                calls = scripted_calls(self.fixture, event)
             self.json_response({
                 "model": "eval-model", "done": True,
                 "message": {"role": "assistant", "content": "", "tool_calls": calls},

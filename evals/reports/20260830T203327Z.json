@@ -1,0 +1,706 @@
+{
+  "schema_version": 1,
+  "run_id": "20260830T203327Z",
+  "kind": "deterministic",
+  "provider": "fake-ollama",
+  "model": "eval-model",
+  "complete": true,
+  "planned_fixtures": [
+    "chat-delivery",
+    "cross-session-recall",
+    "tool-discovery",
+    "web-search",
+    "multiple-actions",
+    "mixed-delivery",
+    "action-failure",
+    "post-delivery-no-loop",
+    "schema-retry",
+    "schema-exhaustion"
+  ],
+  "executed_fixtures": [
+    "chat-delivery",
+    "cross-session-recall",
+    "tool-discovery",
+    "web-search",
+    "multiple-actions",
+    "mixed-delivery",
+    "action-failure",
+    "post-delivery-no-loop",
+    "schema-retry",
+    "schema-exhaustion"
+  ],
+  "skipped_fixtures": [],
+  "stop_reason": null,
+  "budget_kind": "soft-observed-with-preflight-reservation",
+  "estimated_cost_usd": 0.0,
+  "brave_searches": 0,
+  "results": [
+    {
+      "fixture_id": "chat-delivery",
+      "pass": true,
+      "assertions": [
+        {
+          "name": "assistant_exact",
+          "pass": true
+        },
+        {
+          "name": "required_tools",
+          "pass": true
+        },
+        {
+          "name": "max_model_invocations",
+          "pass": true
+        },
+        {
+          "name": "max_brave_searches",
+          "pass": true
+        },
+        {
+          "name": "trace_not_truncated",
+          "pass": true
+        }
+      ],
+      "duration_ms": 2655,
+      "model_invocations": 2,
+      "usage": {
+        "input": 40,
+        "output": 20,
+        "cache_read": 0,
+        "cache_write": 0,
+        "total_tokens": 60
+      },
+      "estimated_cost_usd": 0.0,
+      "cost_known": false,
+      "brave_searches": 0,
+      "validation_failures": 0,
+      "validation_exhaustions": 0,
+      "actions": [
+        {
+          "event_id": "01a05460-88eb-74c3-8664-174f800d3411",
+          "sequence": 5,
+          "tool": "chat.send_message",
+          "status": "succeeded",
+          "delivery_mode": "asap",
+          "action_group_id": "01a05460-88d4-7513-b0a3-458df47de0fc",
+          "index": 0
+        }
+      ]
+    },
+    {
+      "fixture_id": "cross-session-recall",
+      "pass": true,
+      "assertions": [
+        {
+          "name": "assistant_exact",
+          "pass": true
+        },
+        {
+          "name": "required_tools",
+          "pass": true
+        },
+        {
+          "name": "max_model_invocations",
+          "pass": true
+        },
+        {
+          "name": "max_brave_searches",
+          "pass": true
+        },
+        {
+          "name": "trace_not_truncated",
+          "pass": true
+        }
+      ],
+      "duration_ms": 3744,
+      "model_invocations": 5,
+      "usage": {
+        "input": 100,
+        "output": 50,
+        "cache_read": 0,
+        "cache_write": 0,
+        "total_tokens": 150
+      },
+      "estimated_cost_usd": 0.0,
+      "cost_known": false,
+      "brave_searches": 0,
+      "validation_failures": 0,
+      "validation_exhaustions": 0,
+      "actions": [
+        {
+          "event_id": "01a05460-973c-7cb0-b102-d0947124a60e",
+          "sequence": 9,
+          "tool": "chat.search_messages",
+          "status": "succeeded",
+          "delivery_mode": "asap",
+          "action_group_id": "01a05460-9727-7ca3-949d-b2d8a815fa3a",
+          "index": 0
+        },
+        {
+          "event_id": "01a05460-97ba-7842-9e1e-71aced2c827b",
+          "sequence": 13,
+          "tool": "chat.send_message",
+          "status": "succeeded",
+          "delivery_mode": "asap",
+          "action_group_id": "01a05460-97a4-72e0-aad8-ecb35e371e78",
+          "index": 0
+        },
+        {
+          "event_id": "01a05460-9328-7050-a140-9fb667c43c39",
+          "sequence": 4,
+          "tool": "chat.send_message",
+          "status": "succeeded",
+          "delivery_mode": "asap",
+          "action_group_id": "01a05460-9312-7790-b1c9-2098f7b1e787",
+          "index": 0
+        }
+      ]
+    },
+    {
+      "fixture_id": "tool-discovery",
+      "pass": true,
+      "assertions": [
+        {
+          "name": "assistant_exact",
+          "pass": true
+        },
+        {
+          "name": "required_tools",
+          "pass": true
+        },
+        {
+          "name": "max_model_invocations",
+          "pass": true
+        },
+        {
+          "name": "max_brave_searches",
+          "pass": true
+        },
+        {
+          "name": "trace_not_truncated",
+          "pass": true
+        }
+      ],
+      "duration_ms": 2942,
+      "model_invocations": 4,
+      "usage": {
+        "input": 80,
+        "output": 40,
+        "cache_read": 0,
+        "cache_write": 0,
+        "total_tokens": 120
+      },
+      "estimated_cost_usd": 0.0,
+      "cost_known": false,
+      "brave_searches": 0,
+      "validation_failures": 0,
+      "validation_exhaustions": 0,
+      "actions": [
+        {
+          "event_id": "01a05460-a259-7343-9413-5cd3b998fbc7",
+          "sequence": 4,
+          "tool": "habibi.tools.search",
+          "status": "succeeded",
+          "delivery_mode": "asap",
+          "action_group_id": "01a05460-a249-7de1-8220-f28040069f6c",
+          "index": 0
+        },
+        {
+          "event_id": "01a05460-a2d5-7cb0-9caf-15e1e7e97e2a",
+          "sequence": 8,
+          "tool": "eval.marker",
+          "status": "succeeded",
+          "delivery_mode": "asap",
+          "action_group_id": "01a05460-a2c2-7392-9ab7-fd540dc703d6",
+          "index": 0
+        },
+        {
+          "event_id": "01a05460-a356-7f12-a339-4de0ba1820ef",
+          "sequence": 12,
+          "tool": "chat.send_message",
+          "status": "succeeded",
+          "delivery_mode": "asap",
+          "action_group_id": "01a05460-a340-7072-b0fa-3c3db18733e9",
+          "index": 0
+        }
+      ]
+    },
+    {
+      "fixture_id": "web-search",
+      "pass": true,
+      "assertions": [
+        {
+          "name": "assistant_exact",
+          "pass": true
+        },
+        {
+          "name": "required_tools",
+          "pass": true
+        },
+        {
+          "name": "max_model_invocations",
+          "pass": true
+        },
+        {
+          "name": "max_brave_searches",
+          "pass": true
+        },
+        {
+          "name": "trace_not_truncated",
+          "pass": true
+        }
+      ],
+      "duration_ms": 2865,
+      "model_invocations": 3,
+      "usage": {
+        "input": 60,
+        "output": 30,
+        "cache_read": 0,
+        "cache_write": 0,
+        "total_tokens": 90
+      },
+      "estimated_cost_usd": 0.0,
+      "cost_known": false,
+      "brave_searches": 0,
+      "validation_failures": 0,
+      "validation_exhaustions": 0,
+      "actions": [
+        {
+          "event_id": "01a05460-ae1a-7412-bf99-acbbae9a221d",
+          "sequence": 4,
+          "tool": "web-search.search",
+          "status": "succeeded",
+          "delivery_mode": "asap",
+          "action_group_id": "01a05460-ae06-75d1-8e89-ddf0505bd277",
+          "index": 0
+        },
+        {
+          "event_id": "01a05460-ae99-7531-8b5a-0113e89611c7",
+          "sequence": 8,
+          "tool": "chat.send_message",
+          "status": "succeeded",
+          "delivery_mode": "asap",
+          "action_group_id": "01a05460-ae82-74c3-a94e-d330e4aafc84",
+          "index": 0
+        }
+      ]
+    },
+    {
+      "fixture_id": "multiple-actions",
+      "pass": true,
+      "assertions": [
+        {
+          "name": "assistant_exact",
+          "pass": true
+        },
+        {
+          "name": "required_tools",
+          "pass": true
+        },
+        {
+          "name": "max_model_invocations",
+          "pass": true
+        },
+        {
+          "name": "max_brave_searches",
+          "pass": true
+        },
+        {
+          "name": "trace_not_truncated",
+          "pass": true
+        },
+        {
+          "name": "minimum_group_size",
+          "pass": true
+        }
+      ],
+      "duration_ms": 2894,
+      "model_invocations": 3,
+      "usage": {
+        "input": 60,
+        "output": 30,
+        "cache_read": 0,
+        "cache_write": 0,
+        "total_tokens": 90
+      },
+      "estimated_cost_usd": 0.0,
+      "cost_known": false,
+      "brave_searches": 0,
+      "validation_failures": 0,
+      "validation_exhaustions": 0,
+      "actions": [
+        {
+          "event_id": "01a05460-b98a-76b3-a119-882f6c58adcd",
+          "sequence": 5,
+          "tool": "eval.immediate",
+          "status": "succeeded",
+          "delivery_mode": "batch",
+          "action_group_id": "01a05460-b972-7210-9ae2-05166403e08c",
+          "index": 1
+        },
+        {
+          "event_id": "01a05460-b995-7ea1-b4ef-00254fd7fead",
+          "sequence": 6,
+          "tool": "eval.immediate",
+          "status": "succeeded",
+          "delivery_mode": "batch",
+          "action_group_id": "01a05460-b972-7210-9ae2-05166403e08c",
+          "index": 0
+        },
+        {
+          "event_id": "01a05460-ba14-7fc3-aee5-6b72d127f142",
+          "sequence": 10,
+          "tool": "chat.send_message",
+          "status": "succeeded",
+          "delivery_mode": "asap",
+          "action_group_id": "01a05460-b9fd-7192-b4b6-77d3e5069438",
+          "index": 0
+        }
+      ]
+    },
+    {
+      "fixture_id": "mixed-delivery",
+      "pass": true,
+      "assertions": [
+        {
+          "name": "assistant_exact",
+          "pass": true
+        },
+        {
+          "name": "required_tools",
+          "pass": true
+        },
+        {
+          "name": "max_model_invocations",
+          "pass": true
+        },
+        {
+          "name": "max_brave_searches",
+          "pass": true
+        },
+        {
+          "name": "trace_not_truncated",
+          "pass": true
+        },
+        {
+          "name": "minimum_group_size",
+          "pass": true
+        },
+        {
+          "name": "delivery_modes",
+          "pass": true
+        }
+      ],
+      "duration_ms": 2952,
+      "model_invocations": 4,
+      "usage": {
+        "input": 80,
+        "output": 40,
+        "cache_read": 0,
+        "cache_write": 0,
+        "total_tokens": 120
+      },
+      "estimated_cost_usd": 0.0,
+      "cost_known": false,
+      "brave_searches": 0,
+      "validation_failures": 0,
+      "validation_exhaustions": 0,
+      "actions": [
+        {
+          "event_id": "01a05460-c51a-73b0-925c-642466316ea1",
+          "sequence": 7,
+          "tool": "eval.malformed",
+          "status": "failed",
+          "delivery_mode": "batch",
+          "action_group_id": "01a05460-c4f7-7ad1-983b-9d4ee5dd4f67",
+          "index": 3
+        },
+        {
+          "event_id": "01a05460-c526-7a02-9375-ede2c5581464",
+          "sequence": 8,
+          "tool": "eval.immediate",
+          "status": "succeeded",
+          "delivery_mode": "asap",
+          "action_group_id": "01a05460-c4f7-7ad1-983b-9d4ee5dd4f67",
+          "index": 0
+        },
+        {
+          "event_id": "01a05460-c531-7a71-8ddf-943ef6c2afd5",
+          "sequence": 10,
+          "tool": "eval.marker",
+          "status": "succeeded",
+          "delivery_mode": "batch",
+          "action_group_id": "01a05460-c4f7-7ad1-983b-9d4ee5dd4f67",
+          "index": 1
+        },
+        {
+          "event_id": "01a05460-c53d-7833-9323-a578af809be8",
+          "sequence": 11,
+          "tool": "eval.fail",
+          "status": "failed",
+          "delivery_mode": "batch",
+          "action_group_id": "01a05460-c4f7-7ad1-983b-9d4ee5dd4f67",
+          "index": 2
+        },
+        {
+          "event_id": "01a05460-c60f-7963-bade-8da1a5cedab1",
+          "sequence": 15,
+          "tool": "chat.send_message",
+          "status": "succeeded",
+          "delivery_mode": "asap",
+          "action_group_id": "01a05460-c5f8-7c92-b2a2-f9705cba2630",
+          "index": 0
+        }
+      ]
+    },
+    {
+      "fixture_id": "action-failure",
+      "pass": true,
+      "assertions": [
+        {
+          "name": "assistant_exact",
+          "pass": true
+        },
+        {
+          "name": "required_tools",
+          "pass": true
+        },
+        {
+          "name": "max_model_invocations",
+          "pass": true
+        },
+        {
+          "name": "max_brave_searches",
+          "pass": true
+        },
+        {
+          "name": "trace_not_truncated",
+          "pass": true
+        },
+        {
+          "name": "action_failure_observed",
+          "pass": true
+        }
+      ],
+      "duration_ms": 2891,
+      "model_invocations": 3,
+      "usage": {
+        "input": 60,
+        "output": 30,
+        "cache_read": 0,
+        "cache_write": 0,
+        "total_tokens": 90
+      },
+      "estimated_cost_usd": 0.0,
+      "cost_known": false,
+      "brave_searches": 0,
+      "validation_failures": 0,
+      "validation_exhaustions": 0,
+      "actions": [
+        {
+          "event_id": "01a05460-d115-7f92-9f80-fc651b81f0cd",
+          "sequence": 4,
+          "tool": "eval.fail",
+          "status": "failed",
+          "delivery_mode": "asap",
+          "action_group_id": "01a05460-d102-7ea1-8ab2-db49602d1b0b",
+          "index": 0
+        },
+        {
+          "event_id": "01a05460-d193-7dd0-941f-785532cd0e7a",
+          "sequence": 8,
+          "tool": "chat.send_message",
+          "status": "succeeded",
+          "delivery_mode": "asap",
+          "action_group_id": "01a05460-d17c-7c03-9513-80c3336cf54f",
+          "index": 0
+        }
+      ]
+    },
+    {
+      "fixture_id": "post-delivery-no-loop",
+      "pass": true,
+      "assertions": [
+        {
+          "name": "assistant_exact",
+          "pass": true
+        },
+        {
+          "name": "required_tools",
+          "pass": true
+        },
+        {
+          "name": "max_model_invocations",
+          "pass": true
+        },
+        {
+          "name": "max_brave_searches",
+          "pass": true
+        },
+        {
+          "name": "trace_not_truncated",
+          "pass": true
+        }
+      ],
+      "duration_ms": 2630,
+      "model_invocations": 2,
+      "usage": {
+        "input": 40,
+        "output": 20,
+        "cache_read": 0,
+        "cache_write": 0,
+        "total_tokens": 60
+      },
+      "estimated_cost_usd": 0.0,
+      "cost_known": false,
+      "brave_searches": 0,
+      "validation_failures": 0,
+      "validation_exhaustions": 0,
+      "actions": [
+        {
+          "event_id": "01a05460-dc85-7750-8843-cd47091ef48e",
+          "sequence": 5,
+          "tool": "chat.send_message",
+          "status": "succeeded",
+          "delivery_mode": "asap",
+          "action_group_id": "01a05460-dc70-7230-98b8-45cf72278f31",
+          "index": 0
+        }
+      ]
+    },
+    {
+      "fixture_id": "schema-retry",
+      "pass": true,
+      "assertions": [
+        {
+          "name": "assistant_exact",
+          "pass": true
+        },
+        {
+          "name": "required_tools",
+          "pass": true
+        },
+        {
+          "name": "max_model_invocations",
+          "pass": true
+        },
+        {
+          "name": "max_brave_searches",
+          "pass": true
+        },
+        {
+          "name": "trace_not_truncated",
+          "pass": true
+        },
+        {
+          "name": "schema_validation_retries",
+          "pass": true
+        },
+        {
+          "name": "action_count",
+          "pass": true
+        }
+      ],
+      "duration_ms": 2656,
+      "model_invocations": 3,
+      "usage": {
+        "input": 60,
+        "output": 30,
+        "cache_read": 0,
+        "cache_write": 0,
+        "total_tokens": 90
+      },
+      "estimated_cost_usd": 0.0,
+      "cost_known": false,
+      "brave_searches": 0,
+      "validation_failures": 1,
+      "validation_exhaustions": 0,
+      "actions": [
+        {
+          "event_id": "01a05460-e71c-7b71-8056-066bf065b118",
+          "sequence": 5,
+          "tool": "chat.send_message",
+          "status": "succeeded",
+          "delivery_mode": "asap",
+          "action_group_id": "01a05460-e706-7013-9671-2346c21b33d7",
+          "index": 0
+        }
+      ]
+    },
+    {
+      "fixture_id": "schema-exhaustion",
+      "pass": true,
+      "assertions": [
+        {
+          "name": "assistant_exact",
+          "pass": true
+        },
+        {
+          "name": "required_tools",
+          "pass": true
+        },
+        {
+          "name": "max_model_invocations",
+          "pass": true
+        },
+        {
+          "name": "max_brave_searches",
+          "pass": true
+        },
+        {
+          "name": "trace_not_truncated",
+          "pass": true
+        },
+        {
+          "name": "schema_validation_retries",
+          "pass": true
+        },
+        {
+          "name": "schema_validation_exhaustions",
+          "pass": true
+        },
+        {
+          "name": "action_count",
+          "pass": true
+        }
+      ],
+      "duration_ms": 2606,
+      "model_invocations": 4,
+      "usage": {
+        "input": 80,
+        "output": 40,
+        "cache_read": 0,
+        "cache_write": 0,
+        "total_tokens": 120
+      },
+      "estimated_cost_usd": 0.0,
+      "cost_known": false,
+      "brave_searches": 0,
+      "validation_failures": 3,
+      "validation_exhaustions": 1,
+      "actions": []
+    }
+  ],
+  "reproducibility": {
+    "command": [
+      "evals/run.py"
+    ],
+    "platform": "Linux-7.1.8-arch1-3-x86_64-with-glibc2.44",
+    "python": "3.14.7 (main, Aug 10 2026, 07:46:56) [GCC 16.1.1 20260728]",
+    "binary_sha256": "1b2e102be218a9bfa282f5a4c0e5b1d73c8e91ec3ad1a3684d04911a398b708f",
+    "input_sha256": {
+      "evals/fixtures.json": "4bb7cfa483c7be2945c37c19755911e65b66eb1bf9e9ef90dd2098106f8531d0",
+      "evals/run.py": "e35fd75a0b802a9cac47bfa504b8feeca47c8e1918bdfcd35e49a255f76510e8",
+      "evals/report.py": "c54693f6801b8bf138ac324f16390e1d4902e09861e60510849f37296878a70a",
+      "evals/fake_ollama.py": "fea97c67fac534185e25825a8d33140c09027f86285375000a053cb06f239b79",
+      "evals/extensions/eval-fixtures": "f094399823f24daac1a27fc29c99cce8d5e01bba998cc6409c8a42b33fe914d7",
+      "extensions/chat": "bf9c56f23c3a55101d3203302546914c8544f036699fd55645e1e7a2ce159beb",
+      "extensions/web-search": "11f4236af7a918f26b6771f5ad3074339721525b49d5c3adfaeeb1f6effe088a",
+      "model-catalog.json": "22bfc0a4830f84a6d22c5c92c78636b9f36ae9de96670dd847efc5a0949fdd11"
+    },
+    "git_sha": "5f6573c5c2fbcf7cff1b2ec459d26f7e12147b6f",
+    "git_dirty": true,
+    "extension_inputs_tracked": false,
+    "reproducible": false,
+    "note": "Hashes identify exact inputs, but dirty or ignored extension sources prevent reconstruction from the Git SHA alone."
+  }
+}

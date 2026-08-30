@@ -1529,6 +1529,7 @@ mod tests {
                         "args": ["%s", "literal;$(no-shell)"],
                         "cwd": workspace.path()
                     }),
+                    argument_error: None,
                 },
                 &ToolContext {
                     current_event: trigger.clone(),
@@ -1565,6 +1566,7 @@ mod tests {
             call_id: "call".into(),
             name: "example.count".into(),
             arguments: serde_json::json!({}),
+            argument_error: None,
         };
         let context = ToolContext {
             current_event: event.clone(),
@@ -1626,6 +1628,7 @@ mod tests {
                         "path": output,
                         "content": "sentinel-content"
                     }),
+                    argument_error: None,
                 },
                 &ToolContext {
                     current_event: trigger.clone(),

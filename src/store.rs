@@ -150,7 +150,7 @@ pub struct EventStore {
     connection: Connection,
 }
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 impl EventStore {
     pub fn open(path: &str) -> Result<Self> {
@@ -217,6 +217,11 @@ impl EventStore {
              CREATE TABLE IF NOT EXISTS engine_dispatch_outcomes (
                  event_id TEXT PRIMARY KEY REFERENCES events(id),
                  outcome  TEXT NOT NULL
+             );
+
+             CREATE TABLE IF NOT EXISTS engine_validation_retries (
+                 event_id TEXT PRIMARY KEY REFERENCES events(id),
+                 state    TEXT NOT NULL
              );
 
              CREATE TABLE IF NOT EXISTS engine_action_groups (
@@ -302,7 +307,7 @@ impl EventStore {
                  PRIMARY KEY (source, event_type, idempotency_key)
              );
 
-             PRAGMA user_version = 1;"
+             PRAGMA user_version = 2;"
         )?;
 
         Ok(Self { connection })
@@ -456,7 +461,33 @@ impl EventStore {
             "INSERT INTO engine_dispatch_outcomes (event_id, outcome) VALUES (?1, ?2)",
             params![event_id.to_string(), serde_json::to_string(outcome)?],
         )?;
+        transaction.execute(
+            "DELETE FROM engine_validation_retries WHERE event_id = ?1",
+            [event_id.to_string()],
+        )?;
         self.insert_log(&transaction, completed_log)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn save_terminal_dispatch_outcome(
+        &self,
+        event_id: Uuid,
+        outcome: &serde_json::Value,
+        completed_log: &LogEntry,
+        terminal_log: &LogEntry,
+    ) -> Result<()> {
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute(
+            "INSERT INTO engine_dispatch_outcomes (event_id, outcome) VALUES (?1, ?2)",
+            params![event_id.to_string(), serde_json::to_string(outcome)?],
+        )?;
+        transaction.execute(
+            "DELETE FROM engine_validation_retries WHERE event_id = ?1",
+            [event_id.to_string()],
+        )?;
+        self.insert_log(&transaction, completed_log)?;
+        self.insert_log(&transaction, terminal_log)?;
         transaction.commit()?;
         Ok(())
     }
@@ -465,6 +496,37 @@ impl EventStore {
         self.connection
             .query_row(
                 "SELECT outcome FROM engine_dispatch_outcomes WHERE event_id = ?1",
+                [event_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|value| serde_json::from_str(&value).map_err(Into::into))
+            .transpose()
+    }
+
+    pub fn save_validation_retry(
+        &self,
+        event_id: Uuid,
+        state: &serde_json::Value,
+        completed_log: &LogEntry,
+        validation_log: &LogEntry,
+    ) -> Result<()> {
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute(
+            "INSERT INTO engine_validation_retries (event_id, state) VALUES (?1, ?2)
+             ON CONFLICT(event_id) DO UPDATE SET state = excluded.state",
+            params![event_id.to_string(), serde_json::to_string(state)?],
+        )?;
+        self.insert_log(&transaction, completed_log)?;
+        self.insert_log(&transaction, validation_log)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn validation_retry(&self, event_id: Uuid) -> Result<Option<serde_json::Value>> {
+        self.connection
+            .query_row(
+                "SELECT state FROM engine_validation_retries WHERE event_id = ?1",
                 [event_id.to_string()],
                 |row| row.get::<_, String>(0),
             )
@@ -1904,6 +1966,70 @@ mod tests {
         assert_eq!(store.dispatch_outcome(event.id).unwrap(), Some(outcome));
         assert!(store.get_log(&log.id.to_string()).unwrap().is_some());
         assert!(store.action_group(event.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn validation_retry_state_and_logs_are_atomic_and_cleared_by_outcome() {
+        let store = EventStore::open(":memory:").unwrap();
+        let event = Event::new("test.event", "test", Uuid::now_v7(), None, json!({}));
+        store.append_and_enqueue(&event).unwrap();
+        let completed = LogEntry::new(
+            "info",
+            "model",
+            "model.invocation.completed",
+            event.id,
+            Some(event.id),
+            event.correlation_id,
+            json!({}),
+        );
+        let validation = LogEntry::new(
+            "warn",
+            "tool",
+            "tool.call_validation.failed",
+            event.id,
+            Some(event.id),
+            event.correlation_id,
+            json!({}),
+        );
+        let state = json!({ "failed_attempts": 1, "feedback": [] });
+        store
+            .save_validation_retry(event.id, &state, &completed, &validation)
+            .unwrap();
+        assert_eq!(store.validation_retry(event.id).unwrap(), Some(state));
+        assert!(store.get_log(&completed.id.to_string()).unwrap().is_some());
+        assert!(store.get_log(&validation.id.to_string()).unwrap().is_some());
+
+        let outcome = json!({ "calls": [] });
+        let final_log = LogEntry::new(
+            "info",
+            "model",
+            "model.invocation.completed",
+            event.id,
+            Some(event.id),
+            event.correlation_id,
+            json!({}),
+        );
+        let terminal_log = LogEntry::new(
+            "error",
+            "tool",
+            "tool.call_validation.exhausted",
+            event.id,
+            Some(event.id),
+            event.correlation_id,
+            json!({}),
+        );
+        store
+            .save_terminal_dispatch_outcome(event.id, &outcome, &final_log, &terminal_log)
+            .unwrap();
+        assert_eq!(store.validation_retry(event.id).unwrap(), None);
+        assert_eq!(store.dispatch_outcome(event.id).unwrap(), Some(outcome));
+        assert!(store.get_log(&final_log.id.to_string()).unwrap().is_some());
+        assert!(
+            store
+                .get_log(&terminal_log.id.to_string())
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]

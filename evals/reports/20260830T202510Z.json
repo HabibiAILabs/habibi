@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "run_id": "20260830T173418Z",
-  "kind": "deterministic",
-  "provider": "fake-ollama",
-  "model": "eval-model",
+  "run_id": "20260830T202510Z",
+  "kind": "live",
+  "provider": "ollama",
+  "model": "gemma4",
   "complete": true,
   "planned_fixtures": [
     "chat-delivery",
@@ -29,7 +29,7 @@
   "stop_reason": null,
   "budget_kind": "soft-observed-with-preflight-reservation",
   "estimated_cost_usd": 0.0,
-  "brave_searches": 0,
+  "brave_searches": 1,
   "results": [
     {
       "fixture_id": "chat-delivery",
@@ -56,37 +56,39 @@
           "pass": true
         }
       ],
-      "duration_ms": 2734,
+      "duration_ms": 11440,
       "model_invocations": 2,
       "usage": {
-        "input": 40,
-        "output": 20,
+        "input": 2894,
+        "output": 617,
         "cache_read": 0,
         "cache_write": 0,
-        "total_tokens": 60
+        "total_tokens": 3511
       },
       "estimated_cost_usd": 0.0,
       "cost_known": false,
       "brave_searches": 0,
+      "validation_failures": 0,
+      "validation_exhaustions": 0,
       "actions": [
         {
-          "event_id": "01a053bc-844f-7f52-94f7-3569da1c3023",
+          "event_id": "01a05459-0b0c-75b3-9389-bf0db4de730b",
           "sequence": 5,
           "tool": "chat.send_message",
           "status": "succeeded",
           "delivery_mode": "asap",
-          "action_group_id": "01a053bc-8438-7803-a145-b0122c9decdb",
+          "action_group_id": "01a05459-0af5-7eb0-ac72-452cb3b4493d",
           "index": 0
         }
       ]
     },
     {
       "fixture_id": "cross-session-recall",
-      "pass": true,
+      "pass": false,
       "assertions": [
         {
           "name": "assistant_exact",
-          "pass": true
+          "pass": false
         },
         {
           "name": "required_tools",
@@ -105,51 +107,53 @@
           "pass": true
         }
       ],
-      "duration_ms": 3810,
+      "duration_ms": 61352,
       "model_invocations": 5,
       "usage": {
-        "input": 100,
-        "output": 50,
+        "input": 7185,
+        "output": 2177,
         "cache_read": 0,
         "cache_write": 0,
-        "total_tokens": 150
+        "total_tokens": 9362
       },
       "estimated_cost_usd": 0.0,
       "cost_known": false,
       "brave_searches": 0,
+      "validation_failures": 0,
+      "validation_exhaustions": 0,
       "actions": [
         {
-          "event_id": "01a053bc-9339-7ba2-ba7d-8ca591a608dc",
+          "event_id": "01a05459-4ad7-7872-8d95-5ac70b4353b4",
           "sequence": 9,
           "tool": "chat.search_messages",
           "status": "succeeded",
           "delivery_mode": "asap",
-          "action_group_id": "01a053bc-9322-7451-9032-4e2602fc2517",
+          "action_group_id": "01a05459-4ac1-7411-8226-957621f5d055",
           "index": 0
         },
         {
-          "event_id": "01a053bc-93b6-7650-9049-deaefd1d7401",
+          "event_id": "01a05459-68da-7f81-9fd0-be3a9cf39f9e",
           "sequence": 13,
           "tool": "chat.send_message",
           "status": "succeeded",
           "delivery_mode": "asap",
-          "action_group_id": "01a053bc-939f-7290-a8f6-c9e11dcb210a",
+          "action_group_id": "01a05459-68c2-76d0-9d68-8309ea6f235a",
           "index": 0
         },
         {
-          "event_id": "01a053bc-8f23-7110-a244-721ec6f9b52d",
-          "sequence": 4,
+          "event_id": "01a05459-2b1a-7630-b40d-3ab3c1d6f01f",
+          "sequence": 6,
           "tool": "chat.send_message",
           "status": "succeeded",
           "delivery_mode": "asap",
-          "action_group_id": "01a053bc-8f0d-7511-9f96-7fd97001777b",
+          "action_group_id": "01a05459-2b03-7580-b00f-9edb8023b72b",
           "index": 0
         }
       ]
     },
     {
       "fixture_id": "tool-discovery",
-      "pass": true,
+      "pass": false,
       "assertions": [
         {
           "name": "assistant_exact",
@@ -157,7 +161,7 @@
         },
         {
           "name": "required_tools",
-          "pass": true
+          "pass": false
         },
         {
           "name": "max_model_invocations",
@@ -172,55 +176,48 @@
           "pass": true
         }
       ],
-      "duration_ms": 2908,
-      "model_invocations": 4,
+      "duration_ms": 6904,
+      "model_invocations": 1,
       "usage": {
-        "input": 80,
-        "output": 40,
+        "input": 1307,
+        "output": 435,
         "cache_read": 0,
         "cache_write": 0,
-        "total_tokens": 120
+        "total_tokens": 1742
       },
       "estimated_cost_usd": 0.0,
       "cost_known": false,
       "brave_searches": 0,
+      "validation_failures": 0,
+      "validation_exhaustions": 0,
       "actions": [
         {
-          "event_id": "01a053bc-9ec3-7ff2-ad9a-f3d82244be0a",
-          "sequence": 4,
-          "tool": "habibi.tools.search",
-          "status": "succeeded",
-          "delivery_mode": "asap",
-          "action_group_id": "01a053bc-9eb2-79d0-8735-84f8304eadc4",
-          "index": 0
-        },
-        {
-          "event_id": "01a053bc-9f3e-7743-b099-8122ddd66edd",
-          "sequence": 8,
+          "event_id": "01a0545a-20cc-7092-9902-395e18200c5e",
+          "sequence": 9,
           "tool": "eval.marker",
           "status": "succeeded",
           "delivery_mode": "asap",
-          "action_group_id": "01a053bc-9f2b-7ea1-8078-91fe3d9d17f5",
+          "action_group_id": "01a0545a-20b5-7af3-b166-d44e596e9715",
           "index": 0
         },
         {
-          "event_id": "01a053bc-9fb9-7c33-a0d2-745256277840",
-          "sequence": 12,
+          "event_id": "01a0545a-20da-7ae1-b891-08861c6d9ddb",
+          "sequence": 11,
           "tool": "chat.send_message",
           "status": "succeeded",
           "delivery_mode": "asap",
-          "action_group_id": "01a053bc-9fa2-7612-be80-61d9e5d3e422",
-          "index": 0
+          "action_group_id": "01a0545a-20b5-7af3-b166-d44e596e9715",
+          "index": 1
         }
       ]
     },
     {
       "fixture_id": "web-search",
-      "pass": true,
+      "pass": false,
       "assertions": [
         {
           "name": "assistant_exact",
-          "pass": true
+          "pass": false
         },
         {
           "name": "required_tools",
@@ -228,7 +225,7 @@
         },
         {
           "name": "max_model_invocations",
-          "pass": true
+          "pass": false
         },
         {
           "name": "max_brave_searches",
@@ -239,35 +236,55 @@
           "pass": true
         }
       ],
-      "duration_ms": 2758,
-      "model_invocations": 3,
+      "duration_ms": 25104,
+      "model_invocations": 5,
       "usage": {
-        "input": 60,
-        "output": 30,
+        "input": 6702,
+        "output": 1960,
         "cache_read": 0,
         "cache_write": 0,
-        "total_tokens": 90
+        "total_tokens": 8662
       },
       "estimated_cost_usd": 0.0,
       "cost_known": false,
-      "brave_searches": 0,
+      "brave_searches": 1,
+      "validation_failures": 0,
+      "validation_exhaustions": 0,
       "actions": [
         {
-          "event_id": "01a053bc-aa8f-7b10-91cc-0bc4af39b7f0",
-          "sequence": 4,
+          "event_id": "01a0545a-340b-74c3-84cb-b8e0fc2d10ed",
+          "sequence": 7,
           "tool": "web-search.search",
           "status": "succeeded",
           "delivery_mode": "asap",
-          "action_group_id": "01a053bc-aa7c-7dd0-af93-d698ed01f1b9",
+          "action_group_id": "01a0545a-3133-7c72-9ecf-4db3a17419e2",
           "index": 0
         },
         {
-          "event_id": "01a053bc-ab0b-7ee1-b110-cb10320d97ab",
-          "sequence": 8,
+          "event_id": "01a0545a-5bba-7850-a683-c4afe45f07e0",
+          "sequence": 11,
           "tool": "chat.send_message",
           "status": "succeeded",
           "delivery_mode": "asap",
-          "action_group_id": "01a053bc-aaf5-70b3-9069-bdf9507b6e8b",
+          "action_group_id": "01a0545a-5ba2-7db1-97fc-436bd5eb676d",
+          "index": 0
+        },
+        {
+          "event_id": "01a0545a-66fc-7663-b472-a76c6585b067",
+          "sequence": 14,
+          "tool": "chat.send_message",
+          "status": "failed",
+          "delivery_mode": "asap",
+          "action_group_id": "01a0545a-66e5-7603-b185-354a9622ca8e",
+          "index": 0
+        },
+        {
+          "event_id": "01a0545a-7304-7bd0-893f-3fe29a6395b7",
+          "sequence": 18,
+          "tool": "chat.send_message",
+          "status": "succeeded",
+          "delivery_mode": "asap",
+          "action_group_id": "01a0545a-72e9-7252-90f3-0b79cf8c7d41",
           "index": 0
         }
       ]
@@ -301,45 +318,47 @@
           "pass": true
         }
       ],
-      "duration_ms": 2779,
-      "model_invocations": 3,
+      "duration_ms": 7542,
+      "model_invocations": 1,
       "usage": {
-        "input": 60,
-        "output": 30,
+        "input": 1313,
+        "output": 371,
         "cache_read": 0,
         "cache_write": 0,
-        "total_tokens": 90
+        "total_tokens": 1684
       },
       "estimated_cost_usd": 0.0,
       "cost_known": false,
       "brave_searches": 0,
+      "validation_failures": 0,
+      "validation_exhaustions": 0,
       "actions": [
         {
-          "event_id": "01a053bc-b5c3-7873-82e4-ef546598aa14",
-          "sequence": 5,
+          "event_id": "01a0545a-9fac-7b01-afd2-9a3f655c8a7a",
+          "sequence": 9,
           "tool": "eval.immediate",
           "status": "succeeded",
           "delivery_mode": "batch",
-          "action_group_id": "01a053bc-b5ac-75e0-9915-87aa75c4912d",
-          "index": 0
-        },
-        {
-          "event_id": "01a053bc-b5cf-7160-a90d-3e9089b0ec56",
-          "sequence": 6,
-          "tool": "eval.immediate",
-          "status": "succeeded",
-          "delivery_mode": "batch",
-          "action_group_id": "01a053bc-b5ac-75e0-9915-87aa75c4912d",
+          "action_group_id": "01a0545a-9f8e-7680-9e94-6632184b267e",
           "index": 1
         },
         {
-          "event_id": "01a053bc-b64d-7430-8fc4-c7e6d1f295ea",
+          "event_id": "01a0545a-9fb7-75a1-ba90-e71778df4f9e",
           "sequence": 10,
+          "tool": "eval.immediate",
+          "status": "succeeded",
+          "delivery_mode": "batch",
+          "action_group_id": "01a0545a-9f8e-7680-9e94-6632184b267e",
+          "index": 0
+        },
+        {
+          "event_id": "01a0545a-9fc6-74e0-b3ac-348c6fe4996c",
+          "sequence": 12,
           "tool": "chat.send_message",
           "status": "succeeded",
-          "delivery_mode": "asap",
-          "action_group_id": "01a053bc-b635-7b81-a048-6a3a50104ee6",
-          "index": 0
+          "delivery_mode": "batch",
+          "action_group_id": "01a0545a-9f8e-7680-9e94-6632184b267e",
+          "index": 2
         }
       ]
     },
@@ -376,73 +395,75 @@
           "pass": true
         }
       ],
-      "duration_ms": 3070,
-      "model_invocations": 4,
+      "duration_ms": 19555,
+      "model_invocations": 1,
       "usage": {
-        "input": 80,
-        "output": 40,
+        "input": 1339,
+        "output": 622,
         "cache_read": 0,
         "cache_write": 0,
-        "total_tokens": 120
+        "total_tokens": 1961
       },
       "estimated_cost_usd": 0.0,
       "cost_known": false,
       "brave_searches": 0,
+      "validation_failures": 0,
+      "validation_exhaustions": 0,
       "actions": [
         {
-          "event_id": "01a053bc-c11e-7583-b986-c8df5fce81fa",
-          "sequence": 7,
-          "tool": "eval.fail",
-          "status": "failed",
-          "delivery_mode": "batch",
-          "action_group_id": "01a053bc-c0fb-7133-b591-4c1e5586130a",
-          "index": 2
-        },
-        {
-          "event_id": "01a053bc-c129-7180-98a4-72bcb92e1573",
-          "sequence": 8,
-          "tool": "eval.immediate",
-          "status": "succeeded",
-          "delivery_mode": "asap",
-          "action_group_id": "01a053bc-c0fb-7133-b591-4c1e5586130a",
-          "index": 0
-        },
-        {
-          "event_id": "01a053bc-c134-7262-9066-cb0d3b0f61ea",
-          "sequence": 10,
-          "tool": "eval.marker",
-          "status": "succeeded",
-          "delivery_mode": "batch",
-          "action_group_id": "01a053bc-c0fb-7133-b591-4c1e5586130a",
-          "index": 1
-        },
-        {
-          "event_id": "01a053bc-c140-7171-89f3-7d24e0358b3b",
+          "event_id": "01a0545a-ec28-7671-a933-f2928161164a",
           "sequence": 11,
           "tool": "eval.malformed",
           "status": "failed",
           "delivery_mode": "batch",
-          "action_group_id": "01a053bc-c0fb-7133-b591-4c1e5586130a",
+          "action_group_id": "01a0545a-ebfe-7d92-a437-1247fe2b0951",
           "index": 3
         },
         {
-          "event_id": "01a053bc-c20b-7e50-810f-e6e5a433c929",
-          "sequence": 15,
-          "tool": "chat.send_message",
+          "event_id": "01a0545a-ec33-7051-9d3b-b770a6677d38",
+          "sequence": 12,
+          "tool": "eval.fail",
+          "status": "failed",
+          "delivery_mode": "batch",
+          "action_group_id": "01a0545a-ebfe-7d92-a437-1247fe2b0951",
+          "index": 2
+        },
+        {
+          "event_id": "01a0545a-ec3e-7d12-8514-0986de875d64",
+          "sequence": 13,
+          "tool": "eval.immediate",
           "status": "succeeded",
           "delivery_mode": "asap",
-          "action_group_id": "01a053bc-c1f5-7811-9f5d-70528698bdcd",
+          "action_group_id": "01a0545a-ebfe-7d92-a437-1247fe2b0951",
           "index": 0
+        },
+        {
+          "event_id": "01a0545a-ec49-7883-8e76-3b148cbf35b1",
+          "sequence": 15,
+          "tool": "eval.marker",
+          "status": "succeeded",
+          "delivery_mode": "batch",
+          "action_group_id": "01a0545a-ebfe-7d92-a437-1247fe2b0951",
+          "index": 1
+        },
+        {
+          "event_id": "01a0545a-ec54-7902-9818-14ee535c61cf",
+          "sequence": 17,
+          "tool": "chat.send_message",
+          "status": "succeeded",
+          "delivery_mode": "batch",
+          "action_group_id": "01a0545a-ebfe-7d92-a437-1247fe2b0951",
+          "index": 4
         }
       ]
     },
     {
       "fixture_id": "action-failure",
-      "pass": true,
+      "pass": false,
       "assertions": [
         {
           "name": "assistant_exact",
-          "pass": true
+          "pass": false
         },
         {
           "name": "required_tools",
@@ -465,46 +486,48 @@
           "pass": true
         }
       ],
-      "duration_ms": 2763,
+      "duration_ms": 21138,
       "model_invocations": 3,
       "usage": {
-        "input": 60,
-        "output": 30,
+        "input": 4479,
+        "output": 964,
         "cache_read": 0,
         "cache_write": 0,
-        "total_tokens": 90
+        "total_tokens": 5443
       },
       "estimated_cost_usd": 0.0,
       "cost_known": false,
       "brave_searches": 0,
+      "validation_failures": 0,
+      "validation_exhaustions": 0,
       "actions": [
         {
-          "event_id": "01a053bc-cd7c-7210-86c8-2d849613ff0d",
-          "sequence": 4,
+          "event_id": "01a0545b-0667-7c91-941d-ffd342692bd5",
+          "sequence": 7,
           "tool": "eval.fail",
           "status": "failed",
           "delivery_mode": "asap",
-          "action_group_id": "01a053bc-cd6a-7ad0-98d3-2584e7eccbee",
+          "action_group_id": "01a0545b-0655-73f3-97b2-6b1e77c7c565",
           "index": 0
         },
         {
-          "event_id": "01a053bc-cdfb-7823-9614-af40c4762e87",
-          "sequence": 8,
+          "event_id": "01a0545b-34a1-7a12-bfe5-70205ed7588b",
+          "sequence": 11,
           "tool": "chat.send_message",
           "status": "succeeded",
           "delivery_mode": "asap",
-          "action_group_id": "01a053bc-cde2-7c40-ba92-34c0a4f54610",
+          "action_group_id": "01a0545b-348a-7302-9868-bfdfe76924f5",
           "index": 0
         }
       ]
     },
     {
       "fixture_id": "post-delivery-no-loop",
-      "pass": true,
+      "pass": false,
       "assertions": [
         {
           "name": "assistant_exact",
-          "pass": true
+          "pass": false
         },
         {
           "name": "required_tools",
@@ -512,7 +535,7 @@
         },
         {
           "name": "max_model_invocations",
-          "pass": true
+          "pass": false
         },
         {
           "name": "max_brave_searches",
@@ -523,26 +546,37 @@
           "pass": true
         }
       ],
-      "duration_ms": 2736,
-      "model_invocations": 2,
+      "duration_ms": 13143,
+      "model_invocations": 3,
       "usage": {
-        "input": 40,
-        "output": 20,
+        "input": 3623,
+        "output": 1253,
         "cache_read": 0,
         "cache_write": 0,
-        "total_tokens": 60
+        "total_tokens": 4876
       },
       "estimated_cost_usd": 0.0,
       "cost_known": false,
       "brave_searches": 0,
+      "validation_failures": 0,
+      "validation_exhaustions": 0,
       "actions": [
         {
-          "event_id": "01a053bc-d8b1-7a10-83e4-5a8d6b685167",
+          "event_id": "01a0545b-53c6-7652-8837-94f3c91af0e5",
           "sequence": 5,
           "tool": "chat.send_message",
           "status": "succeeded",
           "delivery_mode": "asap",
-          "action_group_id": "01a053bc-d89b-7392-b409-86752cc8178b",
+          "action_group_id": "01a0545b-53b0-74b3-9a73-3c76b74217ca",
+          "index": 0
+        },
+        {
+          "event_id": "01a0545b-6a20-7fa2-a483-5021fc531289",
+          "sequence": 9,
+          "tool": "chat.send_message",
+          "status": "succeeded",
+          "delivery_mode": "asap",
+          "action_group_id": "01a0545b-6a09-7f80-a4ad-93c49c844845",
           "index": 0
         }
       ]
@@ -550,22 +584,31 @@
   ],
   "reproducibility": {
     "command": [
-      "evals/run.py"
+      "evals/run.py",
+      "--live",
+      "--provider",
+      "ollama",
+      "--model",
+      "gemma4",
+      "--max-cost-usd",
+      "0",
+      "--max-brave-searches",
+      "20"
     ],
     "platform": "Linux-7.1.8-arch1-3-x86_64-with-glibc2.44",
     "python": "3.14.7 (main, Aug 10 2026, 07:46:56) [GCC 16.1.1 20260728]",
-    "binary_sha256": "c3f325315f1abf18a36509f0c094fda90cefb8c2056a9936f0984e67a2d7adf0",
+    "binary_sha256": "ba6cb89b16ed1e2cbcaf6d3a9a264f0fe5e08085fab2435761c7cdbb03dcbe95",
     "input_sha256": {
-      "evals/fixtures.json": "4df808fb4753eb636e669d5eb21ac40fd92a1e202d1c97490c1c40e05d41eca6",
-      "evals/run.py": "12c1fa2f98c8c3536e11c00753b891fff200d30c1bdf2a1669e1b91e9692fb64",
+      "evals/fixtures.json": "4bb7cfa483c7be2945c37c19755911e65b66eb1bf9e9ef90dd2098106f8531d0",
+      "evals/run.py": "e35fd75a0b802a9cac47bfa504b8feeca47c8e1918bdfcd35e49a255f76510e8",
       "evals/report.py": "c54693f6801b8bf138ac324f16390e1d4902e09861e60510849f37296878a70a",
-      "evals/fake_ollama.py": "f05f03aedde2939641ecc90fbff69337696a0c2c15d5fd055d92be015ac3c19b",
+      "evals/fake_ollama.py": "fea97c67fac534185e25825a8d33140c09027f86285375000a053cb06f239b79",
       "evals/extensions/eval-fixtures": "f094399823f24daac1a27fc29c99cce8d5e01bba998cc6409c8a42b33fe914d7",
-      "extensions/chat": "cf723c9b93b3d13aac5a1b6c654146200ee578a7b5db57e2383560e7fc8baa94",
-      "extensions/web-search": "6e9b234cb98ea0d509f4abd1794a57c8cabf0483ccaa9b7c2d923a9fdf9636af",
+      "extensions/chat": "bf9c56f23c3a55101d3203302546914c8544f036699fd55645e1e7a2ce159beb",
+      "extensions/web-search": "11f4236af7a918f26b6771f5ad3074339721525b49d5c3adfaeeb1f6effe088a",
       "model-catalog.json": "22bfc0a4830f84a6d22c5c92c78636b9f36ae9de96670dd847efc5a0949fdd11"
     },
-    "git_sha": "5595b82cd0a057c920838a64d5fbc3105c1fc00b",
+    "git_sha": "5f6573c5c2fbcf7cff1b2ec459d26f7e12147b6f",
     "git_dirty": true,
     "extension_inputs_tracked": false,
     "reproducible": false,

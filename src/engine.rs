@@ -294,20 +294,21 @@ impl Engine {
         if let Some(outcome) = self.with_store(|store| store.dispatch_outcome(current_event.id))? {
             let outcome: DurableDispatchOutcome = serde_json::from_value(outcome)?;
             let _exact_model_response = &outcome.model_response;
+            if outcome.calls.is_empty() {
+                return Ok(());
+            }
             anyhow::ensure!(
                 outcome.catalog_generation == catalog.generation,
                 "pinned tool catalog generation is unavailable after restart"
             );
-            if !outcome.calls.is_empty() {
-                self.execute_action_group(
-                    current_event,
-                    outcome.model_log_id,
-                    &outcome.calls,
-                    &outcome.advertised_tool_names,
-                    catalog,
-                )
-                .await?;
-            }
+            self.execute_action_group(
+                current_event,
+                outcome.model_log_id,
+                &outcome.calls,
+                &outcome.advertised_tool_names,
+                catalog,
+            )
+            .await?;
             return Ok(());
         }
 
@@ -353,122 +354,236 @@ impl Engine {
         let surface_log_id = surface_log.id;
         self.log(surface_log)?;
 
-        let request = self.model.request_body(&input, &surface.definitions);
-        let model_span_id = Uuid::now_v7().to_string();
-        let mut started_log = LogEntry::new(
-            "info",
-            "model",
-            "model.invocation.started",
-            dispatch_id,
-            Some(current_event.id),
-            current_event.correlation_id,
-            json!({
-                "provider": self.model.provider_name(), "model": self.model.model_name(),
-                "endpoint": self.model.endpoint(), "current_event_id": current_event.id,
-                "current_event_type": current_event.event_type, "context_log_id": context_log_id,
-                "tool_surface_log_id": surface_log_id, "tool_catalog_generation": catalog.generation,
-                "request": request,
-            }),
-        );
-        started_log.span_id = Some(model_span_id.clone());
-        let started_log_id = started_log.id;
-        self.log(started_log)?;
-
-        let invocation_started_at = Instant::now();
-        let mut response = match self.model.invoke(request, dispatch_id).await {
-            Ok(response) => response,
-            Err(error) => {
-                let mut failed = LogEntry::new(
-                    "error",
-                    "model",
-                    "model.invocation.failed",
-                    dispatch_id,
-                    Some(current_event.id),
-                    current_event.correlation_id,
-                    json!({ "error": error.to_string(), "started_log_id": started_log_id,
-                        "current_event_type": current_event.event_type, "context_log_id": context_log_id,
-                        "tool_surface_log_id": surface_log_id,
-                        "duration_ms": invocation_started_at.elapsed().as_millis() }),
-                );
-                failed.parent_span_id = Some(model_span_id);
-                self.log(failed)?;
-                return Err(error);
-            }
-        };
-        for call in &mut response.tool_calls {
-            call.name = domain_tool_name(&call.name, &surface.definitions)
-                .with_context(|| {
-                    format!("model called tool '{}' that was not advertised", call.name)
-                })?
-                .to_owned();
-        }
-        let calls = plan_deliveries(response.tool_calls);
-        tool_chain.observe_calls(
-            &calls
-                .iter()
-                .map(|call| call.call.clone())
-                .collect::<Vec<_>>(),
-        );
-        let estimated_cost = response
-            .usage
-            .as_ref()
-            .and_then(|usage| self.model.estimate_cost(usage));
         let advertised_tool_names = surface
             .definitions
             .iter()
             .map(|tool| tool.name.clone())
             .collect::<Vec<_>>();
-        let completed_payload = json!({
-            "started_log_id": started_log_id, "provider": response.provider, "model": response.model,
-            "current_event_type": current_event.event_type, "content": response.content,
-            "tool_calls": calls, "output_items": response.output_items,
-            "provider_response": response.provider_response, "usage": response.usage,
-            "context_log_id": context_log_id, "tool_surface_log_id": surface_log_id,
-            "tool_catalog_generation": catalog.generation, "estimated_cost": estimated_cost,
-            "duration_ms": invocation_started_at.elapsed().as_millis(),
-        });
-        let mut completed_log = LogEntry::new(
-            "info",
-            "model",
-            "model.invocation.completed",
-            dispatch_id,
-            Some(current_event.id),
-            current_event.correlation_id,
-            completed_payload.clone(),
-        );
-        completed_log.parent_span_id = Some(model_span_id);
-        let completed_log_id = completed_log.id;
-        let outcome = DurableDispatchOutcome {
-            model_log_id: completed_log_id,
-            catalog_generation: catalog.generation.clone(),
-            advertised_tool_names: advertised_tool_names.clone(),
-            calls: calls.clone(),
-            model_response: completed_payload,
+        let validation_state = self
+            .with_store(|store| store.validation_retry(current_event.id))?
+            .map(serde_json::from_value::<DurableValidationState>)
+            .transpose()?;
+        let (mut validation_attempt, mut validation_feedback_items) = if let Some(state) =
+            validation_state
+        {
+            if state.catalog_generation != catalog.generation {
+                let terminal_log = LogEntry::new(
+                    "error",
+                    "tool",
+                    "tool.call_validation.exhausted",
+                    dispatch_id,
+                    Some(current_event.id),
+                    current_event.correlation_id,
+                    json!({
+                        "attempt": state.failed_attempts,
+                        "max_retries": MAX_TOOL_CALL_VALIDATION_RETRIES,
+                        "reason": "pinned tool catalog generation is unavailable after restart",
+                        "actions_executed": 0,
+                    }),
+                );
+                let outcome = DurableDispatchOutcome {
+                    model_log_id: terminal_log.id,
+                    catalog_generation: state.catalog_generation,
+                    advertised_tool_names: vec![],
+                    calls: vec![],
+                    model_response: json!({ "validation_exhausted": true, "reason": "catalog_generation_changed" }),
+                };
+                self.with_store(|store| {
+                    store.save_dispatch_outcome(
+                        current_event.id,
+                        &serde_json::to_value(&outcome)?,
+                        &terminal_log,
+                    )
+                })?;
+                return Ok(());
+            }
+            input.extend(state.feedback.clone());
+            (state.failed_attempts, state.feedback)
+        } else {
+            (0, Vec::new())
         };
-        self.with_store(|store| {
-            store.save_dispatch_outcome(
-                current_event.id,
-                &serde_json::to_value(&outcome)?,
-                &completed_log,
-            )
-        })?;
+        loop {
+            let request = self.model.request_body(&input, &surface.definitions);
+            let model_span_id = Uuid::now_v7().to_string();
+            let mut started_log = LogEntry::new(
+                "info",
+                "model",
+                "model.invocation.started",
+                dispatch_id,
+                Some(current_event.id),
+                current_event.correlation_id,
+                json!({
+                    "provider": self.model.provider_name(), "model": self.model.model_name(),
+                    "endpoint": self.model.endpoint(), "current_event_id": current_event.id,
+                    "current_event_type": current_event.event_type, "context_log_id": context_log_id,
+                    "tool_surface_log_id": surface_log_id, "tool_catalog_generation": catalog.generation,
+                    "validation_attempt": validation_attempt, "request": request,
+                }),
+            );
+            started_log.span_id = Some(model_span_id.clone());
+            let started_log_id = started_log.id;
+            self.log(started_log)?;
 
-        if !calls.is_empty() {
-            self.execute_action_group(
-                current_event,
-                completed_log_id,
-                &calls,
-                &advertised_tool_names,
-                catalog,
-            )
-            .await?;
+            let invocation_started_at = Instant::now();
+            let provider_request_id = if validation_attempt == 0 {
+                dispatch_id
+            } else {
+                Uuid::new_v5(
+                    &dispatch_id,
+                    format!("tool-call-validation-{validation_attempt}").as_bytes(),
+                )
+            };
+            let mut response = match self.model.invoke(request, provider_request_id).await {
+                Ok(response) => response,
+                Err(error) => {
+                    let mut failed = LogEntry::new(
+                        "error",
+                        "model",
+                        "model.invocation.failed",
+                        dispatch_id,
+                        Some(current_event.id),
+                        current_event.correlation_id,
+                        json!({ "error": error.to_string(), "started_log_id": started_log_id,
+                            "current_event_type": current_event.event_type, "context_log_id": context_log_id,
+                            "tool_surface_log_id": surface_log_id, "validation_attempt": validation_attempt,
+                            "duration_ms": invocation_started_at.elapsed().as_millis() }),
+                    );
+                    failed.parent_span_id = Some(model_span_id);
+                    self.log(failed)?;
+                    return Err(error);
+                }
+            };
+            let name_errors = normalize_call_names(&mut response.tool_calls, &surface.definitions);
+            let calls = plan_deliveries(response.tool_calls);
+            let mut validation_errors = name_errors;
+            validation_errors.extend(validate_calls(&calls, &catalog)?);
+            let estimated_cost = response
+                .usage
+                .as_ref()
+                .and_then(|usage| self.model.estimate_cost(usage));
+            let completed_payload = json!({
+                "started_log_id": started_log_id, "provider": response.provider, "model": response.model,
+                "current_event_type": current_event.event_type, "content": response.content,
+                "tool_calls": calls, "output_items": response.output_items,
+                "provider_response": response.provider_response, "usage": response.usage,
+                "context_log_id": context_log_id, "tool_surface_log_id": surface_log_id,
+                "tool_catalog_generation": catalog.generation, "estimated_cost": estimated_cost,
+                "validation_attempt": validation_attempt, "validation_errors": validation_errors,
+                "duration_ms": invocation_started_at.elapsed().as_millis(),
+            });
+            let mut completed_log = LogEntry::new(
+                "info",
+                "model",
+                "model.invocation.completed",
+                dispatch_id,
+                Some(current_event.id),
+                current_event.correlation_id,
+                completed_payload.clone(),
+            );
+            completed_log.parent_span_id = Some(model_span_id);
+
+            if !validation_errors.is_empty() {
+                let exhausted = validation_attempt >= MAX_TOOL_CALL_VALIDATION_RETRIES;
+                let validation_log = LogEntry::new(
+                    if exhausted { "error" } else { "warn" },
+                    "tool",
+                    if exhausted {
+                        "tool.call_validation.exhausted"
+                    } else {
+                        "tool.call_validation.failed"
+                    },
+                    dispatch_id,
+                    Some(current_event.id),
+                    current_event.correlation_id,
+                    json!({
+                        "attempt": validation_attempt,
+                        "max_retries": MAX_TOOL_CALL_VALIDATION_RETRIES,
+                        "errors": validation_errors,
+                        "actions_executed": 0,
+                    }),
+                );
+                if exhausted {
+                    let outcome = DurableDispatchOutcome {
+                        model_log_id: completed_log.id,
+                        catalog_generation: catalog.generation.clone(),
+                        advertised_tool_names: advertised_tool_names.clone(),
+                        calls: vec![],
+                        model_response: completed_payload,
+                    };
+                    self.with_store(|store| {
+                        store.save_terminal_dispatch_outcome(
+                            current_event.id,
+                            &serde_json::to_value(&outcome)?,
+                            &completed_log,
+                            &validation_log,
+                        )
+                    })?;
+                    self.log(LogEntry::new(
+                        "debug", "engine", "engine.dispatch.completed", dispatch_id,
+                        Some(current_event.id), current_event.correlation_id,
+                        json!({ "event_id": current_event.id, "outcome": "tool_call_validation_exhausted" }),
+                    ))?;
+                    return Ok(());
+                }
+                validation_attempt += 1;
+                let feedback = validation_feedback(validation_attempt, &validation_errors);
+                validation_feedback_items.push(feedback.clone());
+                let state = DurableValidationState {
+                    catalog_generation: catalog.generation.clone(),
+                    failed_attempts: validation_attempt,
+                    feedback: validation_feedback_items.clone(),
+                };
+                self.with_store(|store| {
+                    store.save_validation_retry(
+                        current_event.id,
+                        &serde_json::to_value(&state)?,
+                        &completed_log,
+                        &validation_log,
+                    )
+                })?;
+                input.push(feedback);
+                continue;
+            }
+
+            tool_chain.observe_calls(
+                &calls
+                    .iter()
+                    .map(|call| call.call.clone())
+                    .collect::<Vec<_>>(),
+            );
+            let completed_log_id = completed_log.id;
+            let outcome = DurableDispatchOutcome {
+                model_log_id: completed_log_id,
+                catalog_generation: catalog.generation.clone(),
+                advertised_tool_names: advertised_tool_names.clone(),
+                calls: calls.clone(),
+                model_response: completed_payload,
+            };
+            self.with_store(|store| {
+                store.save_dispatch_outcome(
+                    current_event.id,
+                    &serde_json::to_value(&outcome)?,
+                    &completed_log,
+                )
+            })?;
+
+            if !calls.is_empty() {
+                self.execute_action_group(
+                    current_event,
+                    completed_log_id,
+                    &calls,
+                    &advertised_tool_names,
+                    catalog,
+                )
+                .await?;
+            }
+            self.log(LogEntry::new(
+                "debug", "engine", "engine.dispatch.completed", dispatch_id,
+                Some(current_event.id), current_event.correlation_id,
+                json!({ "event_id": current_event.id, "outcome": if calls.is_empty() { "no_actions" } else { "actions_requested" } }),
+            ))?;
+            return Ok(());
         }
-        self.log(LogEntry::new(
-            "debug", "engine", "engine.dispatch.completed", dispatch_id,
-            Some(current_event.id), current_event.correlation_id,
-            json!({ "event_id": current_event.id, "outcome": if calls.is_empty() { "no_actions" } else { "actions_requested" } }),
-        ))?;
-        Ok(())
     }
 
     async fn execute_action_group(
@@ -961,6 +1076,17 @@ impl ToolChainState {
     }
 }
 
+const MAX_TOOL_CALL_VALIDATION_RETRIES: usize = 3;
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ToolCallValidationError {
+    call_index: usize,
+    call_id: String,
+    tool: String,
+    path: String,
+    message: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum DeliveryMode {
@@ -973,6 +1099,13 @@ struct PlannedCall {
     #[serde(flatten)]
     call: ToolCall,
     delivery: DeliveryMode,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct DurableValidationState {
+    catalog_generation: String,
+    failed_attempts: usize,
+    feedback: Vec<Value>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -999,6 +1132,84 @@ struct DurableActionGroup {
     catalog_generation: String,
     advertised_tool_names: Vec<String>,
     actions: Vec<DurableAction>,
+}
+
+fn normalize_call_names(
+    calls: &mut [ToolCall],
+    advertised: &[crate::tool::ToolDefinition],
+) -> Vec<ToolCallValidationError> {
+    let mut errors = Vec::new();
+    for (call_index, call) in calls.iter_mut().enumerate() {
+        if let Some(name) = domain_tool_name(&call.name, advertised) {
+            call.name = name.to_owned();
+        } else {
+            errors.push(ToolCallValidationError {
+                call_index,
+                call_id: call.call_id.clone(),
+                tool: call.name.clone(),
+                path: "/name".into(),
+                message: "tool was not advertised for this invocation".into(),
+            });
+        }
+    }
+    errors
+}
+
+fn validate_calls(
+    calls: &[PlannedCall],
+    catalog: &ToolCatalog,
+) -> Result<Vec<ToolCallValidationError>> {
+    let mut errors = Vec::new();
+    for (call_index, planned) in calls.iter().enumerate() {
+        if let Some(message) = &planned.call.argument_error {
+            errors.push(ToolCallValidationError {
+                call_index,
+                call_id: planned.call.call_id.clone(),
+                tool: planned.call.name.clone(),
+                path: String::new(),
+                message: message.clone(),
+            });
+            continue;
+        }
+        let Some(definition) = catalog.definition(&planned.call.name) else {
+            errors.push(ToolCallValidationError {
+                call_index,
+                call_id: planned.call.call_id.clone(),
+                tool: planned.call.name.clone(),
+                path: "/name".into(),
+                message: "tool was not advertised by the pinned catalog".into(),
+            });
+            continue;
+        };
+        let validator = jsonschema::validator_for(&definition.input_schema)
+            .with_context(|| format!("tool '{}' has an invalid input schema", planned.call.name))?;
+        errors.extend(validator.iter_errors(&planned.call.arguments).map(|error| {
+            ToolCallValidationError {
+                call_index,
+                call_id: planned.call.call_id.clone(),
+                tool: planned.call.name.clone(),
+                path: error.instance_path().as_str().to_owned(),
+                message: error.to_string(),
+            }
+        }));
+    }
+    Ok(errors)
+}
+
+fn validation_feedback(attempt: usize, errors: &[ToolCallValidationError]) -> Value {
+    json!({
+        "role": "user",
+        "content": [{
+            "type": "input_text",
+            "text": serde_json::to_string(&json!({
+                "type": "tool_call_validation.failed",
+                "attempt": attempt,
+                "max_retries": MAX_TOOL_CALL_VALIDATION_RETRIES,
+                "instruction": "No actions were executed. Return the complete corrected action group, fixing every schema error.",
+                "errors": errors,
+            })).expect("validation feedback is serializable")
+        }]
+    })
 }
 
 fn plan_deliveries(calls: Vec<ToolCall>) -> Vec<PlannedCall> {
@@ -1115,6 +1326,7 @@ mod tests {
             call_id: "call".into(),
             name: "example.tool".into(),
             arguments,
+            argument_error: None,
         }
     }
 
@@ -1150,6 +1362,110 @@ mod tests {
             json!(["asap", "batch"])
         );
         assert_eq!(definition.input_schema["required"], json!(["value"]));
+    }
+
+    #[test]
+    fn rejects_schema_invalid_calls_before_execution() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = EventStore::open(":memory:").unwrap().shared();
+        let extensions = Arc::new(ExtensionManager::load(directory.path(), store.clone()).unwrap());
+        let runtime = ToolRuntime::new(store, extensions).unwrap();
+        let catalog = runtime.catalog().unwrap();
+        let invalid = PlannedCall {
+            call: ToolCall {
+                call_id: "invalid-call".into(),
+                name: "habibi.tools.search".into(),
+                arguments: json!({}),
+                argument_error: None,
+            },
+            delivery: DeliveryMode::Asap,
+        };
+        let errors = validate_calls(std::slice::from_ref(&invalid), &catalog).unwrap();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].tool, "habibi.tools.search");
+        assert!(errors[0].message.contains("query"));
+
+        let valid = PlannedCall {
+            call: ToolCall {
+                call_id: "valid-call".into(),
+                name: "habibi.tools.search".into(),
+                arguments: json!({ "query": "history" }),
+                argument_error: None,
+            },
+            delivery: DeliveryMode::Asap,
+        };
+        assert!(
+            validate_calls(std::slice::from_ref(&valid), &catalog)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            validate_calls(&[valid, invalid], &catalog).unwrap().len(),
+            1
+        );
+
+        let malformed = PlannedCall {
+            call: ToolCall {
+                call_id: "malformed-call".into(),
+                name: "habibi.tools.search".into(),
+                arguments: Value::Null,
+                argument_error: Some("invalid JSON arguments".into()),
+            },
+            delivery: DeliveryMode::Asap,
+        };
+        assert!(
+            validate_calls(&[malformed], &catalog).unwrap()[0]
+                .message
+                .contains("invalid JSON")
+        );
+
+        let unknown = PlannedCall {
+            call: ToolCall {
+                call_id: "unknown-call".into(),
+                name: "not__advertised".into(),
+                arguments: json!({}),
+                argument_error: None,
+            },
+            delivery: DeliveryMode::Asap,
+        };
+        assert_eq!(
+            validate_calls(&[unknown], &catalog).unwrap()[0].path,
+            "/name"
+        );
+
+        let mut registered_but_unadvertised = vec![ToolCall {
+            call_id: "hidden-call".into(),
+            name: "habibi.events.get".into(),
+            arguments: json!({}),
+            argument_error: None,
+        }];
+        let advertised = vec![catalog.definition("habibi.tools.search").unwrap()];
+        let errors = normalize_call_names(&mut registered_but_unadvertised, &advertised);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].path, "/name");
+    }
+
+    #[test]
+    fn validation_feedback_says_no_actions_executed() {
+        let errors = vec![ToolCallValidationError {
+            call_index: 0,
+            call_id: "call".into(),
+            tool: "chat.send_message".into(),
+            path: "".into(),
+            message: "session_id is required".into(),
+        }];
+        let feedback = validation_feedback(1, &errors);
+        let payload: Value =
+            serde_json::from_str(feedback["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["type"], "tool_call_validation.failed");
+        assert_eq!(payload["attempt"], 1);
+        assert!(
+            payload["instruction"]
+                .as_str()
+                .unwrap()
+                .contains("No actions were executed")
+        );
+        assert_eq!(payload["errors"][0]["tool"], "chat.send_message");
     }
 
     #[test]

@@ -38,8 +38,8 @@ A report exists only after an actual deterministic or live run; `kind` labels wh
 
 | Run | Result | Tokens | Time | Estimated cost |
 | --- | ---: | ---: | ---: | ---: |
-| [Deterministic engine suite](reports/20260830T173418Z.html) | 8/8 | 780 | 23.6s | $0 |
-| [Ollama `gemma4`](reports/20260830T173452Z.html) | 3/8 | 39,571 | 210.3s | $0 |
-| [OpenAI `gpt-5.6-luna`](reports/20260830T173454Z.html) | 2/8 | 27,695 | 295.5s | $0.007315 |
+| [Deterministic engine suite](reports/20260830T203327Z.html) | 10/10 | 990 | 28.8s | $0 |
+| [Ollama `gemma4`](reports/20260830T202510Z.html) | 3/8 | 37,241 | 166.2s | $0 |
+| [OpenAI `gpt-5.6-luna`](reports/20260830T202512Z.html) | 2/8 | 30,509 | 256.9s | $0.007986 |
 
 The static HTML files contain sanitized assertions and metrics. Exact prompts, results, provider payloads, and traces remain only in ignored local artifacts.

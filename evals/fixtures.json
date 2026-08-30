@@ -8,6 +8,8 @@
     {"id":"multiple-actions","prompt":"Call eval.immediate twice in one response, then reply exactly: multiple ok","expected":"multiple ok","required_tools":["eval.immediate","chat.send_message"],"minimum_group_size":2,"max_model_invocations":4,"max_brave_searches":0,"live":true},
     {"id":"mixed-delivery","prompt":"In one response call eval.immediate ASAP, plus eval.marker, eval.fail, and eval.malformed as batch; inspect both failures, then reply exactly: mixed ok","expected":"mixed ok","required_tools":["eval.immediate","eval.marker","eval.fail","eval.malformed","chat.send_message"],"minimum_group_size":4,"required_delivery_modes":["asap","batch"],"max_model_invocations":5,"max_brave_searches":0,"live":true},
     {"id":"action-failure","prompt":"Call eval.fail, inspect its failed result, then reply exactly: recovered","expected":"recovered","required_tools":["eval.fail","chat.send_message"],"require_failure":true,"max_model_invocations":4,"max_brave_searches":0,"live":true},
-    {"id":"post-delivery-no-loop","prompt":"Reply exactly: delivered once","expected":"delivered once","required_tools":["chat.send_message"],"max_model_invocations":2,"max_brave_searches":0,"live":true}
+    {"id":"post-delivery-no-loop","prompt":"Reply exactly: delivered once","expected":"delivered once","required_tools":["chat.send_message"],"max_model_invocations":2,"max_brave_searches":0,"live":true},
+    {"id":"schema-retry","prompt":"Reply exactly: schema retry ok","expected":"schema retry ok","required_tools":["chat.send_message"],"max_model_invocations":3,"max_brave_searches":0,"required_validation_failures":1,"expected_action_count":1,"live":false},
+    {"id":"schema-exhaustion","prompt":"Exercise invalid tool-call exhaustion","expected":null,"required_tools":[],"max_model_invocations":4,"max_brave_searches":0,"required_validation_failures":3,"required_validation_exhaustions":1,"expected_action_count":0,"expect_no_message":true,"live":false}
   ]
 }
