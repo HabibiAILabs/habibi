@@ -134,7 +134,7 @@ function nodeMeta(entry) {
   if (entry.kind === "event") {
     return `cause ${short(entry.record.causation_id)} · root ${short(entry.item.root_event_id)}`;
   }
-  return [entry.record.category, `trigger ${short(entry.record.trigger_event_id)}`, formatDuration(entry.record.payload?.duration_ms)].filter(Boolean).join(" · ");
+  return [entry.record.category, `trigger ${short(entry.record.event_id)}`, formatDuration(entry.record.payload?.duration_ms)].filter(Boolean).join(" · ");
 }
 
 function formatDuration(value) {
@@ -173,8 +173,8 @@ function identityGrid(kind, item) {
     grid.append(identity("Cause", record.causation_id, () => selectRecord("event", record.causation_id)));
     grid.append(identity("Correlation", record.correlation_id));
   } else {
-    grid.append(identity("Trigger", record.trigger_event_id, () => selectRecord("event", record.trigger_event_id)));
-    grid.append(identity("Reaction", record.reaction_id));
+    grid.append(identity("Event", record.event_id, () => selectRecord("event", record.event_id)));
+    grid.append(identity("Dispatch", record.dispatch_id));
   }
   return grid;
 }

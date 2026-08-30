@@ -1,7 +1,9 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
+    convert::Infallible,
     path::PathBuf,
     sync::Arc,
+    time::{Duration as StdDuration, Instant},
 };
 
 use anyhow::Context;
@@ -22,12 +24,12 @@ use uuid::Uuid;
 use crate::process::normalize_executable_grants;
 
 use crate::{
+    engine::Engine,
     event::Event,
     extension::{ExtensionManager, RequestData, RouteOutcome},
     filesystem::normalize_grant_roots,
     installer::ExtensionInstaller,
-    reactor::Reactor,
-    store::{SharedEventStore, StoreEventQuery, StoreLogQuery},
+    store::{EventTailQuery, SharedEventStore, StoreEventQuery, StoreLogQuery},
     studio::{
         CreateDraftDirectoryRequest, CreateDraftRequest, DraftFileRequest, StudioService,
         WriteDraftFileRequest,
@@ -37,12 +39,12 @@ use crate::{
 #[derive(Clone)]
 pub struct WebState {
     pub extensions: Arc<ExtensionManager>,
-    pub reactor: Arc<Reactor>,
+    pub engine: Arc<Engine>,
     pub store: SharedEventStore,
     pub extensions_dir: PathBuf,
     pub studio: Arc<StudioService>,
     pub local_admin: bool,
-    pub reaction_lock: Arc<tokio::sync::Mutex<()>>,
+    pub catalog_mutation_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 pub fn router(state: WebState) -> Router {
@@ -64,6 +66,7 @@ pub fn router(state: WebState) -> Router {
         .route("/assets/stats.js", get(stats_js_asset))
         .route("/assets/studio.js", get(studio_js_asset))
         .route("/api/events", get(list_events))
+        .route("/api/events/stream", get(stream_events))
         .route("/api/logs", get(list_logs))
         .route("/api/trace", get(trace))
         .route("/api/stats", get(stats))
@@ -228,6 +231,174 @@ async fn list_events(State(state): State<WebState>, Query(query): Query<EventsQu
 }
 
 #[derive(Debug, Deserialize)]
+struct EventStreamQuery {
+    #[serde(rename = "type")]
+    event_types: Option<String>,
+    prefix: Option<String>,
+    correlation_id: Option<String>,
+    after_sequence: Option<String>,
+}
+
+struct EventStreamState {
+    store: SharedEventStore,
+    query: EventTailQuery,
+    initial_cursor: Option<i64>,
+    pending: VecDeque<crate::event::StoredEvent>,
+    heartbeat_at: Instant,
+}
+
+fn parse_stream_event_types(value: Option<&str>) -> anyhow::Result<Vec<String>> {
+    let types = value
+        .map(|types| {
+            types
+                .split(',')
+                .map(str::trim)
+                .filter(|event_type| !event_type.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    anyhow::ensure!(
+        value.is_none() || !types.is_empty(),
+        "type must contain an exact event type"
+    );
+    Ok(types)
+}
+
+fn parse_stream_cursor(
+    explicit: Option<&str>,
+    last_event_id: Option<&axum::http::HeaderValue>,
+    fallback: i64,
+) -> anyhow::Result<i64> {
+    let cursor = if let Some(last_event_id) = last_event_id {
+        Some(last_event_id.to_str()?)
+    } else {
+        explicit
+    };
+    let Some(cursor) = cursor else {
+        return Ok(fallback);
+    };
+    let cursor = cursor
+        .parse::<i64>()
+        .context("after_sequence/Last-Event-ID must be a non-negative integer")?;
+    anyhow::ensure!(
+        cursor >= 0,
+        "after_sequence/Last-Event-ID must be a non-negative integer"
+    );
+    Ok(cursor)
+}
+
+fn sse_cursor_frame(sequence: i64) -> String {
+    format!("id: {sequence}\nevent: habibi.cursor\ndata: {{\"sequence\":{sequence}}}\n\n")
+}
+
+fn sse_event_frame(sequence: i64, data: &str) -> String {
+    format!("id: {sequence}\nevent: habibi.event\ndata: {data}\n\n")
+}
+
+async fn stream_events(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    Query(query): Query<EventStreamQuery>,
+) -> Response {
+    let parsed = (|| -> anyhow::Result<EventStreamState> {
+        let event_types = parse_stream_event_types(query.event_types.as_deref())?;
+        let correlation_id = query
+            .correlation_id
+            .as_deref()
+            .map(Uuid::parse_str)
+            .transpose()?;
+        let fallback = state
+            .store
+            .lock()
+            .map_err(|_| anyhow::anyhow!("event store lock poisoned"))?
+            .latest_event_sequence()?;
+        let after_sequence = parse_stream_cursor(
+            query.after_sequence.as_deref(),
+            headers.get("last-event-id"),
+            fallback,
+        )?;
+        Ok(EventStreamState {
+            store: state.store.clone(),
+            query: EventTailQuery {
+                event_types,
+                event_type_prefix: query.prefix,
+                correlation_id,
+                after_sequence,
+                limit: 200,
+            },
+            initial_cursor: Some(after_sequence),
+            pending: VecDeque::new(),
+            heartbeat_at: Instant::now() + StdDuration::from_secs(15),
+        })
+    })();
+    let stream_state = match parsed {
+        Ok(state) => state,
+        Err(error) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": error.to_string() }),
+            );
+        }
+    };
+    let stream = futures::stream::unfold(stream_state, |mut state| async move {
+        loop {
+            if let Some(cursor) = state.initial_cursor.take() {
+                return Some((Ok(Bytes::from(sse_cursor_frame(cursor))), state));
+            }
+            if let Some(event) = state.pending.pop_front() {
+                state.query.after_sequence = event.sequence;
+                let data = match serde_json::to_string(&event) {
+                    Ok(data) => data,
+                    Err(error) => {
+                        return Some((
+                            Ok::<Bytes, Infallible>(Bytes::from(format!(
+                                ": serialization error: {error}\n\n"
+                            ))),
+                            state,
+                        ));
+                    }
+                };
+                return Some((
+                    Ok(Bytes::from(sse_event_frame(event.sequence, &data))),
+                    state,
+                ));
+            }
+            let events = match state.store.lock() {
+                Ok(store) => store.query_event_tail(&state.query),
+                Err(_) => Err(anyhow::anyhow!("event store lock poisoned")),
+            };
+            match events {
+                Ok(events) if !events.is_empty() => {
+                    state.pending = events.into();
+                    continue;
+                }
+                Err(error) => {
+                    tokio::time::sleep(StdDuration::from_secs(1)).await;
+                    return Some((
+                        Ok(Bytes::from(format!(": store error: {error}\n\n"))),
+                        state,
+                    ));
+                }
+                _ => {}
+            }
+            tokio::time::sleep(StdDuration::from_millis(500)).await;
+            if Instant::now() >= state.heartbeat_at {
+                state.heartbeat_at = Instant::now() + StdDuration::from_secs(15);
+                return Some((Ok(Bytes::from_static(b": heartbeat\n\n")), state));
+            }
+        }
+    });
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header("x-accel-buffering", "no")
+        .body(Body::from_stream(stream))
+        .expect("valid SSE response")
+}
+
+#[derive(Debug, Deserialize)]
 struct TraceQuery {
     event_id: Option<String>,
     correlation_id: Option<String>,
@@ -326,7 +497,7 @@ fn build_trace_response(
         .map(|stored| {
             let root = stored
                 .log
-                .trigger_event_id
+                .event_id
                 .filter(|id| parents.contains_key(id))
                 .map(|id| event_root(id, &parents));
             json!({ "record": stored, "root_event_id": root })
@@ -405,13 +576,13 @@ fn build_event_query(query: EventsQuery) -> anyhow::Result<StoreEventQuery> {
 }
 
 async fn models(State(state): State<WebState>) -> Response {
-    match state.reactor.model_catalog() {
+    match state.engine.model_catalog() {
         Ok(catalog) => json_response(
             StatusCode::OK,
             json!({
                 "active": {
-                    "provider": state.reactor.model_provider(),
-                    "model": state.reactor.model_name(),
+                    "provider": state.engine.model_provider(),
+                    "model": state.engine.model_name(),
                 },
                 "catalog": catalog
             }),
@@ -424,7 +595,7 @@ async fn models(State(state): State<WebState>) -> Response {
 }
 
 async fn refresh_models(State(state): State<WebState>) -> Response {
-    match state.reactor.refresh_model_catalog().await {
+    match state.engine.refresh_model_catalog().await {
         Ok(catalog) => json_response(StatusCode::OK, json!({ "catalog": catalog })),
         Err(error) => json_response(
             StatusCode::BAD_GATEWAY,
@@ -457,10 +628,10 @@ struct LogsQuery {
     category: Option<String>,
     name: Option<String>,
     name_prefix: Option<String>,
-    reaction_id: Option<String>,
-    trigger_event_id: Option<String>,
+    dispatch_id: Option<String>,
+    event_id: Option<String>,
     correlation_id: Option<String>,
-    batch_id: Option<String>,
+    action_group_id: Option<String>,
     action_id: Option<String>,
     tool_call_id: Option<String>,
     before_sequence: Option<i64>,
@@ -510,10 +681,10 @@ fn build_log_query(query: LogsQuery) -> anyhow::Result<StoreLogQuery> {
         category: query.category.filter(|value| !value.is_empty()),
         name: query.name.filter(|value| !value.is_empty()),
         name_prefix: query.name_prefix.filter(|value| !value.is_empty()),
-        reaction_id: uuid(query.reaction_id)?,
-        trigger_event_id: uuid(query.trigger_event_id)?,
+        dispatch_id: uuid(query.dispatch_id)?,
+        event_id: uuid(query.event_id)?,
         correlation_id: uuid(query.correlation_id)?,
-        batch_id: query.batch_id.filter(|value| !value.is_empty()),
+        action_group_id: query.action_group_id.filter(|value| !value.is_empty()),
         action_id: query.action_id.filter(|value| !value.is_empty()),
         tool_call_id: query.tool_call_id.filter(|value| !value.is_empty()),
         before_sequence: query.before_sequence,
@@ -551,7 +722,7 @@ async fn toggle_extension(
     Path(extension_id): Path<String>,
     axum::Json(toggle): axum::Json<ExtensionToggle>,
 ) -> Response {
-    let _reaction_guard = state.reaction_lock.lock().await;
+    let _catalog_mutation_guard = state.catalog_mutation_lock.lock().await;
     match state.extensions.set_enabled(&extension_id, toggle.enabled) {
         Ok(true) => json_response(
             StatusCode::OK,
@@ -759,7 +930,7 @@ async fn install_draft(
     if let Some(response) = require_local_studio(&state) {
         return response;
     }
-    let _reaction_guard = state.reaction_lock.lock().await;
+    let _catalog_mutation_guard = state.catalog_mutation_lock.lock().await;
     let draft_path = match state.studio.draft_path(&draft_id) {
         Ok(path) => path,
         Err(error) => {
@@ -876,7 +1047,7 @@ async fn update_extension_grants(
     Path(extension_id): Path<String>,
     axum::Json(update): axum::Json<ExtensionGrantsUpdate>,
 ) -> Response {
-    let _reaction_guard = state.reaction_lock.lock().await;
+    let _catalog_mutation_guard = state.catalog_mutation_lock.lock().await;
     let Some(extension) = state.extensions.get(&extension_id) else {
         return json_response(
             StatusCode::NOT_FOUND,
@@ -984,7 +1155,7 @@ async fn update_extension(
     State(state): State<WebState>,
     Path(extension_id): Path<String>,
 ) -> Response {
-    let _reaction_guard = state.reaction_lock.lock().await;
+    let _catalog_mutation_guard = state.catalog_mutation_lock.lock().await;
     let extensions_dir = state.extensions_dir.clone();
     let rollback_dir = extensions_dir.clone();
     let update_id = extension_id.clone();
@@ -1032,7 +1203,7 @@ async fn reload_extension(
     State(state): State<WebState>,
     Path(extension_id): Path<String>,
 ) -> Response {
-    let _reaction_guard = state.reaction_lock.lock().await;
+    let _catalog_mutation_guard = state.catalog_mutation_lock.lock().await;
     match state.extensions.reload(&extension_id) {
         Ok(extension) => json_response(
             StatusCode::OK,
@@ -1208,34 +1379,44 @@ async fn process_route_outcome(
         return Ok(());
     };
 
-    let _reaction_guard = state.reaction_lock.lock().await;
     validate_event_namespace(extension_id, &draft.event_type)?;
     let correlation_id = Uuid::now_v7();
-    let trigger = Event::new(
+    let event = Event::new(
         draft.event_type,
         format!("extension:{extension_id}"),
         correlation_id,
         None,
         draft.payload,
     );
-    append(&state.store, &trigger)?;
-    add_response_field(outcome, "event_id", Value::String(trigger.id.to_string()));
-
-    let reaction_result = state.reactor.react(&trigger).await;
-
-    match reaction_result {
-        Ok(()) => {
-            add_response_field(
-                outcome,
-                "correlation_id",
-                Value::String(correlation_id.to_string()),
+    let (sequence, accepted_event, accepted_json, _reused) = {
+        let store = state
+            .store
+            .lock()
+            .map_err(|_| anyhow::anyhow!("event store lock poisoned"))?;
+        if let Some(key) = draft.idempotency_key.as_deref() {
+            anyhow::ensure!(
+                outcome.json.is_some(),
+                "idempotent event routes require a JSON response"
             );
+            store.append_and_enqueue_idempotent(&event, key, outcome.json.as_ref())?
+        } else {
+            let sequence = store.append_and_enqueue(&event)?;
+            (sequence, event, outcome.json.clone(), false)
         }
-        Err(error) => {
-            outcome.status = StatusCode::ACCEPTED.as_u16();
-            add_response_field(outcome, "reaction_error", Value::String(error.to_string()));
-        }
-    }
+    };
+    outcome.json = accepted_json;
+    outcome.status = StatusCode::ACCEPTED.as_u16();
+    add_response_field(
+        outcome,
+        "event_id",
+        Value::String(accepted_event.id.to_string()),
+    );
+    add_response_field(
+        outcome,
+        "correlation_id",
+        Value::String(accepted_event.correlation_id.to_string()),
+    );
+    add_response_field(outcome, "sequence", Value::Number(sequence.into()));
     Ok(())
 }
 
@@ -1244,13 +1425,6 @@ fn validate_event_namespace(extension_id: &str, event_type: &str) -> anyhow::Res
         anyhow::bail!("extension '{extension_id}' cannot emit event type '{event_type}'");
     }
     Ok(())
-}
-
-fn append(store: &SharedEventStore, event: &Event) -> anyhow::Result<i64> {
-    store
-        .lock()
-        .map_err(|_| anyhow::anyhow!("event store lock poisoned"))?
-        .append(event)
 }
 
 fn add_response_field(outcome: &mut RouteOutcome, key: &str, value: Value) {
@@ -1330,5 +1504,48 @@ mod tests {
         assert_eq!(response["events"][1]["root_event_id"], json!(root.id));
         assert_eq!(response["events"][0]["caused_event_ids"], json!([child.id]));
         assert_eq!(response["truncated"], false);
+    }
+}
+
+#[cfg(test)]
+mod sse_tests {
+    use super::*;
+
+    #[test]
+    fn sse_cursor_precedence_and_validation_are_explicit() {
+        let header = axum::http::HeaderValue::from_static("8");
+        assert_eq!(
+            parse_stream_cursor(Some("9"), Some(&header), 10).unwrap(),
+            8
+        );
+        assert_eq!(parse_stream_cursor(None, Some(&header), 10).unwrap(), 8);
+        assert_eq!(parse_stream_cursor(None, None, 10).unwrap(), 10);
+        assert!(parse_stream_cursor(Some("-1"), None, 10).is_err());
+        assert!(parse_stream_cursor(Some("nope"), None, 10).is_err());
+    }
+
+    #[test]
+    fn sse_type_contract_is_comma_separated_exact_values() {
+        assert_eq!(
+            parse_stream_event_types(Some("chat.one, chat.two")).unwrap(),
+            vec!["chat.one", "chat.two"]
+        );
+        assert!(parse_stream_event_types(Some(" , ")).is_err());
+    }
+
+    #[test]
+    fn sse_cursor_frame_preserves_live_only_anchor_before_data() {
+        assert_eq!(
+            sse_cursor_frame(41),
+            "id: 41\nevent: habibi.cursor\ndata: {\"sequence\":41}\n\n"
+        );
+    }
+
+    #[test]
+    fn sse_frame_has_sequence_id_named_event_and_full_json_data() {
+        assert_eq!(
+            sse_event_frame(42, r#"{"sequence":42}"#),
+            "id: 42\nevent: habibi.event\ndata: {\"sequence\":42}\n\n"
+        );
     }
 }

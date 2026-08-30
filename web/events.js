@@ -4,9 +4,14 @@ const count = document.querySelector("#event-count");
 const range = document.querySelector("#event-range");
 const loadOlder = document.querySelector("#load-older");
 const customTimes = [...document.querySelectorAll(".custom-time")];
+const toggleLive = document.querySelector("#toggle-live");
 let displayed = [];
 let oldestSequence = null;
 let lastPageSize = 0;
+let liveAnchor = 0;
+let live = true;
+let eventSource = null;
+const seenSequences = new Set();
 
 function queryParameters(beforeSequence) {
   const data = new FormData(form);
@@ -22,14 +27,22 @@ function queryParameters(beforeSequence) {
 }
 
 async function queryEvents({ older = false } = {}) {
+  if (!older) {
+    const anchorResponse = await fetch("/api/events?limit=1");
+    const anchorResult = await anchorResponse.json();
+    liveAnchor = anchorResult.events?.at(-1)?.sequence || 0;
+  }
   const response = await fetch(`/api/events?${queryParameters(older ? oldestSequence : null)}`);
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || `Query failed (${response.status})`);
   const page = result.events.slice().reverse();
   lastPageSize = page.length;
+  if (!older) seenSequences.clear();
+  page.forEach((event) => seenSequences.add(event.sequence));
   displayed = older ? [...displayed, ...page] : page;
   oldestSequence = displayed.at(-1)?.sequence || null;
   renderEvents();
+  if (!older && live) subscribe();
 }
 
 function renderEvents() {
@@ -81,12 +94,11 @@ function eventCard(event) {
   links.className = "record-links";
   links.append(
     recordLink("Open trace", `/trace?event_id=${encodeURIComponent(event.id)}`),
-    recordLink("Related logs", `/logs?trigger_event_id=${encodeURIComponent(event.id)}`),
-    recordLink("Correlation logs", `/logs?reaction_id=${encodeURIComponent(event.correlation_id)}`),
+    recordLink("Related logs", `/logs?event_id=${encodeURIComponent(event.id)}`),
+    recordLink("Correlation logs", `/logs?correlation_id=${encodeURIComponent(event.correlation_id)}`),
   );
 
   const details = document.createElement("details");
-  if (event.event_type === "model.invocation.started") details.className = "reaction-detail";
   const summary = document.createElement("summary");
   summary.textContent = detailLabel(event);
   const payload = document.createElement("pre");
@@ -100,7 +112,7 @@ function detailLabel(event) {
   if (event.event_type === "action.requested") return "Requested tool and arguments";
   if (event.event_type === "action.result.succeeded") return "Tool result and effect events";
   if (event.event_type === "action.result.failed") return "Tool failure result";
-  if (event.event_type === "action.batch.completed") return "Coalesced batch result references";
+  if (event.event_type === "actions.completed") return "Completed action group result references";
   if (event.event_type === "event.link.created") return "Semantic event link";
   return "Event payload";
 }
@@ -150,6 +162,57 @@ document.querySelector("#actions").addEventListener("click", () => {
   customTimes.forEach((element) => { element.hidden = true; });
   queryEvents().catch(showError);
 });
+
+function subscribe() {
+  eventSource?.close();
+  if (!live) return;
+  const values = new FormData(form);
+  const parameters = new URLSearchParams({ after_sequence: String(liveAnchor) });
+  for (const key of ["type", "prefix", "correlation_id"]) {
+    const value = String(values.get(key) || "").trim();
+    if (value) parameters.set(key, value);
+  }
+  eventSource = new EventSource(`/api/events/stream?${parameters}`);
+  eventSource.addEventListener("habibi.event", (message) => {
+    const event = JSON.parse(message.data);
+    liveAnchor = Math.max(liveAnchor, event.sequence);
+    if (seenSequences.has(event.sequence)) return;
+    seenSequences.add(event.sequence);
+    if (!matchesCurrentFilters(event)) return;
+    displayed.unshift(event);
+    if (displayed.length > 1000) displayed.pop();
+    oldestSequence = displayed.at(-1)?.sequence || null;
+    renderEvents();
+  });
+}
+
+function matchesCurrentFilters(event) {
+  const values = new FormData(form);
+  const source = String(values.get("source") || "").trim();
+  const eventId = String(values.get("event_id") || "").trim();
+  const payload = String(values.get("payload_contains") || "").trim().toLowerCase();
+  const occurred = new Date(event.occurred_at).getTime();
+  const from = String(values.get("from") || "").trim();
+  const to = String(values.get("to") || "").trim();
+  const windowName = String(values.get("window") || "all");
+  const windows = { "15m": 15 * 60e3, "1h": 60 * 60e3, "24h": 24 * 60 * 60e3,
+    "7d": 7 * 24 * 60 * 60e3, "30d": 30 * 24 * 60 * 60e3 };
+  if (source && event.source !== source) return false;
+  if (eventId && event.id !== eventId) return false;
+  if (payload && !JSON.stringify(event.payload).toLowerCase().includes(payload)) return false;
+  if (from && occurred < new Date(from).getTime()) return false;
+  if (to && occurred > new Date(to).getTime()) return false;
+  if (!from && windows[windowName] && occurred < Date.now() - windows[windowName]) return false;
+  return true;
+}
+
+toggleLive.addEventListener("click", () => {
+  live = !live;
+  toggleLive.textContent = live ? "Pause live" : "Resume live";
+  toggleLive.setAttribute("aria-pressed", String(live));
+  if (live) subscribe(); else eventSource?.close();
+});
+window.addEventListener("beforeunload", () => eventSource?.close());
 
 function showError(error) {
   list.innerHTML = "";

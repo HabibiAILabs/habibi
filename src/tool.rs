@@ -32,7 +32,6 @@ pub struct ToolCall {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolContext {
-    pub trigger: Event,
     pub current_event: Event,
     pub correlation_id: Uuid,
 }
@@ -53,8 +52,6 @@ pub struct ToolExecution {
     pub host_events: Vec<HostEffect>,
     #[serde(skip)]
     pub failure: Option<String>,
-    #[serde(default)]
-    pub settle: bool,
 }
 
 #[derive(Clone)]
@@ -212,7 +209,6 @@ impl ToolRuntime {
             events: vec![],
             host_events: vec![],
             failure: None,
-            settle: false,
         })
     }
 
@@ -266,7 +262,6 @@ impl ToolRuntime {
             events: vec![],
             host_events: vec![],
             failure: None,
-            settle: false,
         })
     }
 
@@ -275,7 +270,7 @@ impl ToolRuntime {
             .get("from_event_id")
             .and_then(Value::as_str)
             .map(str::to_owned)
-            .unwrap_or_else(|| context.trigger.id.to_string());
+            .unwrap_or_else(|| context.current_event.id.to_string());
         let to_event_id = required_string(arguments, "to_event_id")?;
         let relation = arguments
             .get("relation")
@@ -308,6 +303,7 @@ impl ToolRuntime {
             result: json!({ "link_id": link_id, "linked": true }),
             events: vec![EventDraft {
                 event_type: "event.link.created".into(),
+                idempotency_key: None,
                 payload: json!({
                     "link_id": link_id,
                     "from_event_id": from_event_id,
@@ -321,7 +317,6 @@ impl ToolRuntime {
             }],
             host_events: vec![],
             failure: None,
-            settle: false,
         })
     }
 
@@ -337,7 +332,6 @@ impl ToolRuntime {
             events: vec![],
             host_events: vec![],
             failure: None,
-            settle: false,
         })
     }
 
@@ -367,10 +361,10 @@ impl ToolRuntime {
             category: string("category"),
             name: string("name"),
             name_prefix: string("name_prefix"),
-            reaction_id: uuid("reaction_id")?,
-            trigger_event_id: uuid("trigger_event_id")?,
+            dispatch_id: uuid("dispatch_id")?,
+            event_id: uuid("event_id")?,
             correlation_id: uuid("correlation_id")?,
-            batch_id: string("batch_id"),
+            action_group_id: string("action_group_id"),
             action_id: string("action_id"),
             tool_call_id: string("tool_call_id"),
             before_sequence: arguments.get("before_sequence").and_then(Value::as_i64),
@@ -394,7 +388,6 @@ impl ToolRuntime {
             events: vec![],
             host_events: vec![],
             failure: None,
-            settle: false,
         })
     }
 
@@ -440,7 +433,6 @@ impl ToolRuntime {
             events: vec![],
             host_events: vec![],
             failure: None,
-            settle: false,
         })
     }
 
@@ -462,7 +454,6 @@ impl ToolRuntime {
             events: vec![],
             host_events: vec![],
             failure: None,
-            settle: false,
         })
     }
 }
@@ -552,7 +543,7 @@ fn builtin_definitions() -> Vec<ToolDefinition> {
             "Create an agent-authored semantic link between two existing events.",
             json!({
                 "type":"object","properties":{
-                    "from_event_id":{"type":"string","description":"Defaults to the reaction trigger event."},
+                    "from_event_id":{"type":"string","description":"Defaults to the current event."},
                     "to_event_id":{"type":"string"},"relation":{"type":"string","enum":["related","continues","supports","contradicts","derived_from","supersedes","same_entity","same_topic"]},
                     "description":{"type":"string"},"bidirectional":{"type":"boolean"}
                 },"required":["to_event_id"]
@@ -575,9 +566,9 @@ fn builtin_definitions() -> Vec<ToolDefinition> {
             "Search detailed operational logs for model, action, extension, HTTP, and runtime execution.",
             json!({"type":"object","properties":{
                 "level":{"type":"string"},"category":{"type":"string"},"name":{"type":"string"},
-                "name_prefix":{"type":"string"},"reaction_id":{"type":"string"},
-                "trigger_event_id":{"type":"string"},"correlation_id":{"type":"string"},
-                "batch_id":{"type":"string"},"action_id":{"type":"string"},"tool_call_id":{"type":"string"},
+                "name_prefix":{"type":"string"},"dispatch_id":{"type":"string"},
+                "event_id":{"type":"string"},"correlation_id":{"type":"string"},
+                "action_group_id":{"type":"string"},"action_id":{"type":"string"},"tool_call_id":{"type":"string"},
                 "before_sequence":{"type":"integer"},"after_sequence":{"type":"integer"},
                 "occurred_after":{"type":"string"},"occurred_before":{"type":"string"},
                 "payload_contains":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":1000}
@@ -659,7 +650,6 @@ mod tests {
                     arguments: json!({}),
                 },
                 &ToolContext {
-                    trigger: trigger.clone(),
                     current_event: trigger.clone(),
                     correlation_id: trigger.correlation_id,
                 },

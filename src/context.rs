@@ -110,10 +110,10 @@ pub fn compile_context_items(
 
 pub fn current_event_input(store: &SharedEventStore, event: &Event) -> Result<Value> {
     let mut related_results = Vec::new();
-    if event.event_type == "action.batch.completed"
+    if event.event_type == "actions.completed"
         && let Some(result_ids) = event
             .payload
-            .get("result_event_ids")
+            .get("batched_result_event_ids")
             .and_then(Value::as_array)
     {
         let locked = store

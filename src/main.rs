@@ -1,6 +1,7 @@
 mod auth;
 mod catalog;
 mod context;
+mod engine;
 mod event;
 mod extension;
 mod filesystem;
@@ -8,7 +9,6 @@ mod installer;
 mod model;
 #[cfg(target_os = "linux")]
 mod process;
-mod reactor;
 mod scanner;
 mod search;
 mod store;
@@ -21,10 +21,10 @@ use std::{path::PathBuf, sync::Arc};
 use anyhow::{Context, Result, bail};
 use auth::CredentialStore;
 use catalog::CatalogManager;
+use engine::Engine;
 use extension::ExtensionManager;
 use installer::{ExtensionInstaller, SourceOptions};
 use model::{ModelClient, ModelConfig};
-use reactor::Reactor;
 use store::EventStore;
 use studio::StudioService;
 use tool::ToolRuntime;
@@ -102,18 +102,19 @@ async fn main() -> Result<()> {
         bail!("extension drafts and installed extensions must use separate directories");
     }
     let tools = Arc::new(ToolRuntime::new(store.clone(), extensions.clone())?);
-    let reactor = Arc::new(Reactor::new(store.clone(), model, tools));
-    reactor.record_runtime_started()?;
+    let engine = Arc::new(Engine::new(store.clone(), model, tools));
+    let engine_owner = engine.acquire_database_ownership()?;
+    engine.record_runtime_started()?;
     let state = WebState {
         extensions: extensions.clone(),
-        reactor,
+        engine: engine.clone(),
         store,
         extensions_dir: extensions_path.clone(),
         studio,
         local_admin: bind_address
             .parse::<std::net::SocketAddr>()
             .is_ok_and(|address| address.ip().is_loopback()),
-        reaction_lock: Arc::new(tokio::sync::Mutex::new(())),
+        catalog_mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
     };
     let app = web::router(state.clone());
 
@@ -125,15 +126,24 @@ async fn main() -> Result<()> {
     println!("Extensions: {}", extensions_path.display());
     println!(
         "Model: {}/{}",
-        state.reactor.model_provider(),
-        state.reactor.model_name()
+        state.engine.model_provider(),
+        state.engine.model_name()
     );
     println!("Extension drafts: {}", state.studio.root_path().display());
     println!("Web: http://{bind_address}");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let engine_task = tokio::spawn(engine.run(engine_owner, shutdown_rx));
+    let server_shutdown = shutdown_tx.clone();
+    let result = axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            let _ = server_shutdown.send(true);
+        })
+        .await;
+    let _ = shutdown_tx.send(true);
+    engine_task.await?;
+    result?;
     Ok(())
 }
 

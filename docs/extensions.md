@@ -55,8 +55,7 @@ static_dir = "web"
 
 Capabilities are optional and default to false. An extension receives only the corresponding
 host APIs. Lua runs without the `io`, `os`, `package`, or `debug` standard libraries. API version 2
-replaces the former reaction-context callback; packages must use `habibi.context.register` and may
-use `habibi.tools.suggest`. The obsolete callback is not retained.
+uses `habibi.context.register` and `habibi.tools.suggest` for per-event model context and tool discovery.
 
 Habibi also infers provided features from registered routes, static web content, context hooks,
 and tool suggestion hooks. These details appear at `/extensions`, where extensions can be enabled
@@ -110,14 +109,17 @@ habibi.tools.register({
 end)
 ```
 
-A handler may return namespaced effect events. Habibi records every action request and result as
-an event, records execution diagnostics as logs, and gathers all calls from one processed event
-into a batch. The resulting `action.batch.completed` event is queued with all results in original
-call order and is processed as the next event. There is no internal turn limit: the reaction
-settles when the event queue is empty. A terminal delivery tool may return `settle = true`; Habibi
-still records its request, result, effects, and `action.batch.completed`, but does not send that batch
-back to the model. Official Chat uses this after delivering the final user-visible message, preventing
-acknowledgment/retry loops without imposing a hidden turn limit on ordinary work.
+A handler may return namespaced effect events. Habibi records every action request, result, and
+effect as an immutable event and execution diagnostics as logs. All calls from one model response
+form one action group and execute concurrently. The reserved `_habibi_delivery` input property is
+injected into advertised schemas and stripped before validation/execution, so handlers never receive
+it. Values are `asap` and `batch`; omission defaults to ASAP for one call and batch for multiple calls.
+Invalid values use that same deterministic default.
+
+ASAP result events enter the durable model inbox individually as execution finishes. Batch results
+do not enter individually; `actions.completed` exposes those results once, in original call order.
+The completion event is always persisted and is enqueued only when batched results exist. Failed
+results use the selected delivery mode. Tools cannot suppress or terminate result delivery.
 
 Only `habibi.tools.search`, event-relevant extension suggestions, tools discovered in the current
 causal chain, and tools already used in that chain are advertised to a model invocation. Extensions
@@ -135,10 +137,10 @@ end)
 
 Suggestions are discovery hints, not authorization. Dangerous tools must enforce confirmation and
 argument policy when executed. Tool definitions and handlers are pinned to one validated catalog
-generation for the complete reaction chain. Tool advertisements, calls, outcomes, schema-token
+generation for each action group. Tool advertisements, calls, outcomes, schema-token
 estimates, and execution durations are recorded in logs and aggregated at `/stats`.
 
-## Emitting events and requesting reactions
+## Emitting events and dispatching model work
 
 A route can ask the host to append one event:
 
@@ -147,17 +149,19 @@ return {
   status = 201,
   emit = {
     type = "example.item.created",
-    payload = { item_id = habibi.id() }
+    idempotency_key = request.json.request_id,
+    payload = { item_id = request.json.request_id }
   }
 }
 ```
 
-Every event emitted by an extension route enters the reactor after it is appended. Internal action
-request, effect, and result events remain durable facts, but they are not each sent separately to
-the model; their ordered `action.batch.completed` aggregate is the next model input. Core supplies a stable system prompt
-and the current event. An extension with the `context` capability may contribute its own event
-references or message projections. Hooks run deterministically by extension ID and hook name;
-failed hooks are logged and skipped without stopping other extensions.
+When `emit` is present, core validates the namespace, appends the event and durable inbox row in one
+SQLite transaction, normalizes the response to `202 Accepted`, and adds `event_id`, `correlation_id`,
+and `sequence`. If `idempotency_key` is present, the JSON response and acceptance metadata are stored
+atomically; retries of the same extension/type/key return the original acceptance without a new event. Model processing continues independently of the request. Core supplies a stable system
+prompt and the immutable claimed event. An extension with the `context` capability may contribute its
+own event references or message projections. Both hook families run anew for every claimed event,
+deterministically by extension ID and hook name; failed hooks are logged and skipped without stopping peers.
 
 ```lua
 habibi.context.register("example-history", function(trigger)

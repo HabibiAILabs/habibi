@@ -108,6 +108,8 @@ pub struct EventDraft {
     pub event_type: String,
     #[serde(default)]
     pub payload: Value,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -182,6 +184,7 @@ struct LuaState {
 pub struct LoadedExtension {
     pub manifest: ExtensionManifest,
     pub generation: String,
+    execution_snapshot: tempfile::TempDir,
     static_files: HashMap<String, (Vec<u8>, String)>,
     store: SharedEventStore,
     enabled: AtomicBool,
@@ -430,9 +433,11 @@ impl LoadedExtension {
         tool_suggestion_hooks.sort_by(|left, right| left.name.cmp(&right.name));
         let static_files = load_static_files(directory, &manifest)?;
         let generation = extension_generation(&manifest_source, &source, &static_files);
+        let execution_snapshot = snapshot_extension(directory)?;
         Ok(Self {
             manifest,
             generation,
+            execution_snapshot,
             static_files,
             store,
             enabled: AtomicBool::new(enabled),
@@ -619,6 +624,20 @@ impl LoadedExtension {
         if !self.is_enabled() {
             bail!("extension '{}' is disabled", self.manifest.id);
         }
+        let isolated = Self::load(self.execution_snapshot.path(), self.store.clone())?;
+        anyhow::ensure!(
+            isolated.generation == self.generation,
+            "extension '{}' changed after its tool catalog was pinned",
+            self.manifest.id
+        );
+        isolated.execute_tool_in_state(call, context)
+    }
+
+    fn execute_tool_in_state(
+        &self,
+        call: &ToolCall,
+        context: &ToolContext,
+    ) -> Result<ToolExecution> {
         let state = self
             .state
             .lock()
@@ -672,6 +691,7 @@ impl LoadedExtension {
                 event: EventDraft {
                     event_type: effect.event_type,
                     payload: effect.payload,
+                    idempotency_key: None,
                 },
             })
             .collect::<Vec<_>>();
@@ -689,6 +709,7 @@ impl LoadedExtension {
                     event: EventDraft {
                         event_type: effect.event_type,
                         payload: effect.payload,
+                        idempotency_key: None,
                     },
                 }),
         );
@@ -703,7 +724,6 @@ impl LoadedExtension {
                 events: Vec::new(),
                 host_events,
                 failure: Some(error.to_string()),
-                settle: false,
             }),
         }
     }
@@ -1276,6 +1296,28 @@ fn extension_generation(
     format!("{:x}", hasher.finalize())
 }
 
+fn snapshot_extension(directory: &Path) -> Result<tempfile::TempDir> {
+    fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
+        fs::create_dir_all(destination)?;
+        for entry in fs::read_dir(source)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let target = destination.join(entry.file_name());
+            if file_type.is_dir() {
+                copy_tree(&entry.path(), &target)?;
+            } else if file_type.is_file() {
+                fs::copy(entry.path(), target)?;
+            } else {
+                bail!("extension snapshot cannot contain symlinks or special files");
+            }
+        }
+        Ok(())
+    }
+    let snapshot = tempfile::tempdir()?;
+    copy_tree(directory, snapshot.path())?;
+    Ok(snapshot)
+}
+
 fn load_static_files(
     directory: &Path,
     manifest: &ExtensionManifest,
@@ -1489,7 +1531,6 @@ mod tests {
                     }),
                 },
                 &ToolContext {
-                    trigger: trigger.clone(),
                     current_event: trigger.clone(),
                     correlation_id: trigger.correlation_id,
                 },
@@ -1505,42 +1546,38 @@ mod tests {
     }
 
     #[test]
-    fn extension_tools_can_explicitly_settle_a_chain() {
+    fn tool_calls_use_isolated_lua_states() {
         let directory = tempfile::tempdir().unwrap();
-        fs::write(
-            directory.path().join("extension.toml"),
-            "id = \"example\"\nname = \"Example\"\nversion = \"1.0.0\"\napi_version = 2\n[capabilities]\ntools = true\n",
-        )
-        .unwrap();
-        fs::write(
-            directory.path().join("extension.lua"),
-            "habibi.tools.register({ name = 'example.finish', description = 'Finish', input_schema = { type = 'object' } }, function() return { result = { done = true }, settle = true } end)\n",
-        )
-        .unwrap();
+        fs::write(directory.path().join("extension.toml"),
+            "id = \"example\"\nname = \"Example\"\nversion = \"1.0.0\"\napi_version = 2\n[capabilities]\ntools = true\n").unwrap();
+        fs::write(directory.path().join("extension.lua"),
+            "counter = 0\nhabibi.tools.register({ name = 'example.count', description = 'Count', input_schema = { type = 'object' } }, function() counter = counter + 1 return { result = { counter = counter } } end)\n").unwrap();
         let store = EventStore::open(":memory:").unwrap().shared();
         let extension = LoadedExtension::load(directory.path(), store).unwrap();
-        let trigger = Event::new(
-            "test.trigger",
+        let event = Event::new(
+            "test.event",
             "test",
             uuid::Uuid::now_v7(),
             None,
             serde_json::json!({}),
         );
-        let execution = extension
-            .execute_tool(
-                &ToolCall {
-                    call_id: "call-1".into(),
-                    name: "example.finish".into(),
-                    arguments: serde_json::json!({}),
-                },
-                &ToolContext {
-                    trigger: trigger.clone(),
-                    current_event: trigger.clone(),
-                    correlation_id: trigger.correlation_id,
-                },
-            )
-            .unwrap();
-        assert!(execution.settle);
+        let call = ToolCall {
+            call_id: "call".into(),
+            name: "example.count".into(),
+            arguments: serde_json::json!({}),
+        };
+        let context = ToolContext {
+            current_event: event.clone(),
+            correlation_id: event.correlation_id,
+        };
+        assert_eq!(
+            extension.execute_tool(&call, &context).unwrap().result["counter"],
+            1
+        );
+        assert_eq!(
+            extension.execute_tool(&call, &context).unwrap().result["counter"],
+            1
+        );
     }
 
     #[test]
@@ -1591,7 +1628,6 @@ mod tests {
                     }),
                 },
                 &ToolContext {
-                    trigger: trigger.clone(),
                     current_event: trigger.clone(),
                     correlation_id: trigger.correlation_id,
                 },

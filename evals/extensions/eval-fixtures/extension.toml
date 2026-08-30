@@ -1,0 +1,9 @@
+id = "eval"
+name = "Evaluation fixtures"
+version = "1.0.0"
+description = "Isolated tools used only by the checked-in evaluation runner."
+api_version = 2
+
+[capabilities]
+tools = true
+events = true

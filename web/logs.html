@@ -4,11 +4,11 @@
 <form id="log-filters" class="event-filters">
 <label>Window<select name="window"><option value="all">All time</option><option value="15m">Last 15 minutes</option><option value="1h">Last hour</option><option value="24h">Last 24 hours</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option></select></label>
 <label>Level<select name="level"><option value="">Any</option><option>trace</option><option>debug</option><option>info</option><option>warn</option><option>error</option></select></label>
-<label>Category<input name="category" placeholder="model, action, reactor…"></label>
+<label>Category<input name="category" placeholder="model, action, engine…"></label>
 <label>Name<input name="name" placeholder="exact log name"></label><label>Name prefix<input name="name_prefix" placeholder="model.invocation."></label>
 <label>Payload contains<input name="payload_contains" placeholder="case-insensitive text"></label>
-<label>Reaction ID<input name="reaction_id" placeholder="UUID"></label><label>Trigger event ID<input name="trigger_event_id" placeholder="UUID"></label>
-<label>Batch ID<input name="batch_id"></label><label>Action ID<input name="action_id"></label><label>Tool call ID<input name="tool_call_id"></label>
+<label>Dispatch ID<input name="dispatch_id" placeholder="UUID"></label><label>Event ID<input name="event_id" placeholder="UUID"></label>
+<label>Action group ID<input name="action_group_id"></label><label>Action ID<input name="action_id"></label><label>Tool call ID<input name="tool_call_id"></label>
 <label>Limit<select name="limit"><option>25</option><option selected>100</option><option>250</option><option>500</option><option>1000</option></select></label>
 <button class="primary" type="submit">Query logs</button><button class="secondary" id="model-logs" type="button">Model logs</button><button class="secondary" id="action-logs" type="button">Action logs</button>
 </form><div class="event-summary"><span id="log-count">0 logs</span><span id="log-range"></span></div><section id="log-list" class="event-list"></section><button id="load-older" class="secondary load-older" hidden>Load older logs</button></main><script type="module" src="/assets/logs.js"></script></body></html>

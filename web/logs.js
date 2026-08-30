@@ -67,12 +67,12 @@ function logCard(log) {
   metadata.className = "event-metadata";
   appendMeta(metadata, "level", log.level);
   appendMeta(metadata, "category", log.category);
-  appendMetaLink(metadata, "reaction", log.reaction_id, `/logs?reaction_id=${encodeURIComponent(log.reaction_id)}`);
-  if (log.trigger_event_id) {
-    appendMetaLink(metadata, "trigger", log.trigger_event_id, `/events?event_id=${encodeURIComponent(log.trigger_event_id)}`);
+  appendMetaLink(metadata, "dispatch", log.dispatch_id, `/logs?dispatch_id=${encodeURIComponent(log.dispatch_id)}`);
+  if (log.event_id) {
+    appendMetaLink(metadata, "event", log.event_id, `/events?event_id=${encodeURIComponent(log.event_id)}`);
   }
   appendMeta(metadata, "event type", log.payload?.current_event_type);
-  appendMeta(metadata, "batch", log.batch_id);
+  appendMeta(metadata, "action group", log.action_group_id);
   appendMeta(metadata, "action", log.action_id);
   appendMeta(metadata, "tool call", log.tool_call_id);
   appendMeta(metadata, "tokens", usage?.total_tokens);
@@ -82,10 +82,10 @@ function logCard(log) {
   const links = document.createElement("nav");
   links.className = "record-links";
   links.append(recordLink("Open trace", `/trace?correlation_id=${encodeURIComponent(log.correlation_id)}`));
-  if (log.trigger_event_id) {
-    links.append(recordLink("Trigger event", `/events?event_id=${encodeURIComponent(log.trigger_event_id)}`));
+  if (log.event_id) {
+    links.append(recordLink("Event", `/events?event_id=${encodeURIComponent(log.event_id)}`));
   }
-  links.append(recordLink("Reaction logs", `/logs?reaction_id=${encodeURIComponent(log.reaction_id)}`));
+  links.append(recordLink("Dispatch logs", `/logs?dispatch_id=${encodeURIComponent(log.dispatch_id)}`));
 
   article.append(header, metadata, links);
   const structured = structuredModelView(log);

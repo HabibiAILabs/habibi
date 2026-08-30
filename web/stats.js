@@ -45,9 +45,9 @@ async function loadStats() {
   $("#tool-usage").replaceChildren(...usage.tools.map((tool) => row([
     tool.tool,
     number.format(tool.advertised_invocations),
-    number.format(tool.chains_advertised),
+    number.format(tool.dispatches_advertised),
     number.format(tool.calls),
-    number.format(tool.chains_used),
+    number.format(tool.dispatches_used),
     tool.advertised_invocations ? `${((tool.calls / tool.advertised_invocations) * 100).toFixed(1)}%` : "—",
     number.format(tool.succeeded),
     number.format(tool.failed),

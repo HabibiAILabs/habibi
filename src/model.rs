@@ -13,8 +13,9 @@ use crate::{
 pub(crate) const SYSTEM_PROMPT: &str = r#"You are Habibi, a local event-driven personal AI.
 Each invocation processes one immutable current event. Extension-provided context may accompany it.
 Durable event history spans extension-level chat sessions; sessions are views, not memory boundaries. Use advertised or discovered history tools instead of claiming past sessions are inaccessible.
-Act only through tools advertised for this invocation. Use habibi.tools.search when you need a tool that is not advertised.
-Tool calls in one invocation are independent; their durable results are delivered in a subsequent action.batch.completed event.
+Act only through tools advertised for this invocation. Use habibi.tools.search when you need a tool that is not advertised. Search results make returned tools available on the next invocation; when the current task requires one, call it before delivering a final result.
+A successful action result is a fact, not a request for acknowledgment. If it confirms that a user-visible message or requested effect was already delivered, normally take no action: do not send a confirmation, thanks, or follow-up message. Failed results may require recovery or a user-visible explanation.
+Tool calls in one invocation form one concurrent action group. Set the reserved `_habibi_delivery` argument to `asap` for an independently delivered result or `batch` for delivery through `actions.completed`. If omitted, one call defaults to `asap` and multiple calls default to `batch`.
 Plain assistant text is operational output only; use an advertised extension tool for user-visible or domain effects."#;
 const DEFAULT_CODEX_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
@@ -350,14 +351,14 @@ impl ModelClient {
         })
     }
 
-    pub async fn invoke(&self, body: Value) -> Result<ModelResponse> {
+    pub async fn invoke(&self, body: Value, dispatch_id: Uuid) -> Result<ModelResponse> {
         match self.config.provider {
-            ModelProvider::OpenAiCodex => self.invoke_codex(body).await,
-            ModelProvider::Ollama => self.invoke_ollama(body).await,
+            ModelProvider::OpenAiCodex => self.invoke_codex(body, dispatch_id).await,
+            ModelProvider::Ollama => self.invoke_ollama(body, dispatch_id).await,
         }
     }
 
-    async fn invoke_codex(&self, body: Value) -> Result<ModelResponse> {
+    async fn invoke_codex(&self, body: Value, dispatch_id: Uuid) -> Result<ModelResponse> {
         let credential = self
             .config
             .credentials
@@ -365,7 +366,7 @@ impl ModelClient {
             .context("OpenAI credentials are not configured")?
             .valid_openai_credential(&self.client)
             .await?;
-        let request_id = Uuid::now_v7().to_string();
+        let request_id = dispatch_id.to_string();
         let response = self
             .client
             .post(&self.config.endpoint)
@@ -378,6 +379,7 @@ impl ModelClient {
             .header("OpenAI-Beta", "responses=experimental")
             .header("session-id", &request_id)
             .header("x-client-request-id", &request_id)
+            .header("idempotency-key", &request_id)
             .header(header::ACCEPT, "text/event-stream")
             .json(&body)
             .send()
@@ -394,10 +396,11 @@ impl ModelClient {
         parse_sse_response(&response_body, &self.config.model)
     }
 
-    async fn invoke_ollama(&self, body: Value) -> Result<ModelResponse> {
+    async fn invoke_ollama(&self, body: Value, dispatch_id: Uuid) -> Result<ModelResponse> {
         let response = self
             .client
             .post(&self.config.endpoint)
+            .header("x-idempotency-key", dispatch_id.to_string())
             .json(&body)
             .send()
             .await

@@ -29,8 +29,8 @@ Habibi's core provides:
 
 - An append-only SQLite event store
 - Native OpenAI ChatGPT/Codex OAuth and local Ollama model transports
-- A queue-driven event reactor with one model invocation per processed event
-- A searchable, chain-scoped tool registry with measured suggestions, advertisements, calls, and outcomes
+- A durable SQLite model inbox with one serial background engine worker
+- A searchable, event-scoped tool registry with measured suggestions, advertisements, calls, and outcomes
 - A local Axum web server
 - Capability-scoped Lua extensions
 - Namespaced web routes and JSON KV storage for extensions
@@ -75,6 +75,8 @@ cp .env.example .env
 | `HABIBI_DB` | no | `habibi.db` |
 | `HABIBI_BIND` | no | `127.0.0.1:8787` |
 | `HABIBI_EXTENSIONS_DIR` | no | `extensions` |
+
+The durable engine requires a newly created database. Pre-redesign/unversioned databases are rejected with an actionable error; there is intentionally no migration, inbox backfill, or compatibility mode. Preserve an old database separately and point `HABIBI_DB` at a new path.
 
 Select OpenAI with `HABIBI_MODEL_PROVIDER=openai-codex`, or Ollama with:
 
@@ -146,14 +148,27 @@ to 100 events and supports `limit` (up to 1,000), `type`, `prefix`, `source`, `c
 `before_sequence`, `after_sequence`, `from`, `to`, and preset `window` values (`15m`, `1h`,
 `24h`, `7d`, `30d`, or `all`). Sequence cursors allow the UI to traverse all history.
 
-Action requests, structured results, batch barriers, tool effects, and semantic links are events.
-Route-emitted domain events trigger model processing; internal action/effect/result facts are
-represented to the model through the ordered `action.batch.completed` event rather than invoking
-the model once for every bookkeeping event. Model requests/responses and execution diagnostics are
-logs rather than reactor inputs.
+Event-producing routes transactionally append an event and a durable inbox item, return `202 Accepted`,
+and never wait for model completion. One background engine claims inbox items in sequence order;
+startup requeues interrupted claims. Context and tool-suggestion hooks run anew for each immutable
+claimed event. Model requests/responses and execution diagnostics remain logs and never enter the inbox.
+
+`GET /api/events/stream` tails committed events as SSE (`event: habibi.event`, sequence IDs). Its
+comma-separated `type` values are exact matches; `prefix`, `correlation_id`, and `after_sequence`
+are also supported. Without a cursor it starts at the current high-water mark and immediately emits
+a `habibi.cursor` control frame carrying that anchor. `Last-Event-ID` overrides the initial query
+cursor on reconnect. Polling uses bounded pages and idle heartbeats, and clients must de-duplicate
+sequence IDs for at-least-once delivery.
+
+One model response forms one concurrent action group. `_habibi_delivery` is core-reserved call
+metadata (`asap` or `batch`) and is stripped before tool execution. Omitted metadata defaults to
+ASAP for one call and batch for multiple calls. Every result is persisted: ASAP results enter the
+inbox independently on completion, while batched results are exposed once through `actions.completed`
+in call order. `actions.completed` is always persisted and enters the inbox only when it has batched
+results. Failures follow the same delivery mode; there is no terminal/one-way tool contract.
 
 `GET /api/logs` and `/logs` provide searchable operational history by level, category, name,
-reaction, trigger, correlation, batch, action, tool call, time, payload text, and sequence. Model
+dispatch, event, correlation, action group, action, tool call, time, payload text, and sequence. Model
 logs include exact requests, native output items, parsed tool calls, token usage, cache reads and
 writes when reported by the provider, and per-invocation cost estimates when pricing is configured.
 The Logs UI adds structured request/response summaries, safe Markdown rendering for model text,
@@ -164,7 +179,7 @@ streams as an interactive H-shaped path with paired tool inputs/results, exact m
 and each compiled context. A `truncated` flag identifies chains beyond the 1,000-event or 2,000-log
 view bounds.
 `GET /api/stats` and `/stats` aggregate model usage globally and by model, plus tool advertisements,
-distinct chains, calls, outcomes, schema-token estimates, and execution duration. Pricing comes from
+distinct dispatches, calls, outcomes, schema-token estimates, and execution duration. Pricing comes from
 `model-catalog.json`, selected by provider and model ID. The Stats page can refresh the catalog from
 models.dev through `POST /api/models/refresh`; `GET /api/models` exposes the current catalog. Set
 `HABIBI_MODEL_CATALOG` or `HABIBI_MODEL_CATALOG_URL` to use custom storage or a different source.
@@ -181,7 +196,10 @@ searchable through the registry.
 
 The official chat extension is maintained at
 [`HabibiAssistant/extensions`](https://github.com/HabibiAssistant/extensions/tree/main/chat).
-Its web UI and API are mounted beneath `/extensions/chat/`.
+Its web UI and API are mounted beneath `/extensions/chat/`. Chat `0.3.0` uses accepted producer
+responses, `context.current_event`, and the core SSE stream.
+
+Chat creation POSTs require a client-generated `request_id`; message POSTs require a client-generated `message_id`. Retrying the same key returns the original `202` event/correlation/sequence metadata without appending or dispatching a duplicate.
 
 ```text
 GET    /extensions/chat/api/sessions
@@ -235,7 +253,10 @@ See [`docs/extensions.md`](docs/extensions.md) for the extension contract and ho
 
 ```sh
 mise exec -- cargo test
-mise exec -- cargo clippy --all-targets -- -D warnings
+mise exec -- cargo clippy --all-targets --all-features -- -D warnings
+python3 -m unittest -v evals/test_eval.py
+# No credentials or network use:
+python3 evals/run.py
 ```
 
 ## Core event types
@@ -243,7 +264,7 @@ mise exec -- cargo clippy --all-targets -- -D warnings
 - `action.requested`
 - `action.result.succeeded`
 - `action.result.failed`
-- `action.batch.completed`
+- `actions.completed`
 - `event.link.created`
 - `event.link.removed`
 

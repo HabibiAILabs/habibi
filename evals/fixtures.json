@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "fixtures": [
+    {"id":"chat-delivery","prompt":"Reply exactly: eval chat delivery ok","expected":"eval chat delivery ok","required_tools":["chat.send_message"],"max_model_invocations":2,"max_brave_searches":0,"live":true},
+    {"id":"cross-session-recall","setup":["Remember that the project codename is Indigo Finch."],"prompt":"Recall the project codename I told you in the other conversation, then reply exactly: Indigo Finch","expected":"Indigo Finch","required_tools":["chat.search_messages","chat.send_message"],"max_model_invocations":4,"max_brave_searches":0,"live":true},
+    {"id":"tool-discovery","prompt":"Find a tool for an eval marker, call it, then reply exactly: discovery ok","expected":"discovery ok","required_tools":["habibi.tools.search","eval.marker","chat.send_message"],"max_model_invocations":5,"max_brave_searches":0,"live":true},
+    {"id":"web-search","prompt":"Use web search once for Habibi Assistant, then reply exactly: search ok","expected":"search ok","required_tools":["web-search.search","chat.send_message"],"max_model_invocations":4,"max_brave_searches":1,"live":true},
+    {"id":"multiple-actions","prompt":"Call eval.immediate twice in one response, then reply exactly: multiple ok","expected":"multiple ok","required_tools":["eval.immediate","chat.send_message"],"minimum_group_size":2,"max_model_invocations":4,"max_brave_searches":0,"live":true},
+    {"id":"mixed-delivery","prompt":"In one response call eval.immediate ASAP, plus eval.marker, eval.fail, and eval.malformed as batch; inspect both failures, then reply exactly: mixed ok","expected":"mixed ok","required_tools":["eval.immediate","eval.marker","eval.fail","eval.malformed","chat.send_message"],"minimum_group_size":4,"required_delivery_modes":["asap","batch"],"max_model_invocations":5,"max_brave_searches":0,"live":true},
+    {"id":"action-failure","prompt":"Call eval.fail, inspect its failed result, then reply exactly: recovered","expected":"recovered","required_tools":["eval.fail","chat.send_message"],"require_failure":true,"max_model_invocations":4,"max_brave_searches":0,"live":true},
+    {"id":"post-delivery-no-loop","prompt":"Reply exactly: delivered once","expected":"delivered once","required_tools":["chat.send_message"],"max_model_invocations":2,"max_brave_searches":0,"live":true}
+  ]
+}
