@@ -921,6 +921,41 @@ impl EventStore {
         row.map(stored_event_from_parts).transpose()
     }
 
+    pub fn event_links_for_events(
+        &self,
+        event_ids: &[Uuid],
+        limit: usize,
+    ) -> Result<Vec<serde_json::Value>> {
+        if event_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids =
+            serde_json::to_string(&event_ids.iter().map(Uuid::to_string).collect::<Vec<_>>())?;
+        let mut statement = self.connection.prepare(
+            "SELECT link_id, from_event_id, to_event_id, relation, description, bidirectional
+             FROM event_links
+             WHERE active = 1 AND (
+               from_event_id IN (SELECT value FROM json_each(?1)) OR
+               to_event_id IN (SELECT value FROM json_each(?1))
+             )
+             ORDER BY link_id
+             LIMIT ?2",
+        )?;
+        statement
+            .query_map(params![ids, limit.clamp(1, 2_001) as i64], |row| {
+                Ok(serde_json::json!({
+                    "link_id": row.get::<_, String>(0)?,
+                    "from_event_id": row.get::<_, String>(1)?,
+                    "to_event_id": row.get::<_, String>(2)?,
+                    "relation": row.get::<_, String>(3)?,
+                    "description": row.get::<_, Option<String>>(4)?,
+                    "bidirectional": row.get::<_, bool>(5)?,
+                }))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
     pub fn related_events(
         &self,
         event_id: &str,
@@ -1673,6 +1708,60 @@ mod tests {
             .unwrap();
         assert_eq!(links.len(), 1);
         assert_eq!(links[0]["event"]["id"], from.id.to_string());
+    }
+
+    #[test]
+    fn batches_active_graph_links_touching_visible_events() {
+        let store = EventStore::open(":memory:").unwrap();
+        let correlation = Uuid::now_v7();
+        let visible = Event::new("test.visible", "test", correlation, None, json!({}));
+        let external = Event::new("test.external", "test", Uuid::now_v7(), None, json!({}));
+        store.append(&visible).unwrap();
+        store.append(&external).unwrap();
+        for (link_id, from, to, bidirectional) in [
+            ("a-active", external.id, visible.id, false),
+            ("b-removed", visible.id, external.id, true),
+            ("c-active", visible.id, external.id, true),
+        ] {
+            store
+                .append(&Event::new(
+                    "event.link.created",
+                    "habibi",
+                    correlation,
+                    None,
+                    json!({
+                        "link_id": link_id,
+                        "from_event_id": from,
+                        "to_event_id": to,
+                        "relation": "related",
+                        "description": "test link",
+                        "bidirectional": bidirectional,
+                    }),
+                ))
+                .unwrap();
+        }
+        store
+            .append(&Event::new(
+                "event.link.removed",
+                "habibi",
+                correlation,
+                None,
+                json!({ "link_id": "b-removed" }),
+            ))
+            .unwrap();
+
+        let links = store.event_links_for_events(&[visible.id], 10).unwrap();
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0]["link_id"], "a-active");
+        assert_eq!(links[0]["from_event_id"], external.id.to_string());
+        assert_eq!(links[0]["to_event_id"], visible.id.to_string());
+        assert_eq!(links[0]["bidirectional"], false);
+        assert_eq!(links[1]["link_id"], "c-active");
+        assert_eq!(links[1]["bidirectional"], true);
+        assert_eq!(
+            store.event_links_for_events(&[visible.id], 1).unwrap()[0]["link_id"],
+            "a-active"
+        );
     }
 
     #[test]

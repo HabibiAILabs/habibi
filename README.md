@@ -181,7 +181,11 @@ and direct links between logs and their trigger events while preserving the comp
 `GET /api/trace` accepts an `event_id` or `correlation_id` and returns a bounded joined trace with
 each event's causal root and children plus correlated operational logs. `/trace` renders those two
 streams as an interactive H-shaped path with paired tool inputs/results, exact model inputs/outputs,
-and each compiled context. A `truncated` flag identifies chains beyond the 1,000-event or 2,000-log
+and each compiled context. Its Relationships view uses `GET /api/event-graph` to render a bounded,
+filterable graph of durable causation and semantic links. Correlation is a selectable highlight, never
+a fabricated edge. The graph defaults to the newest 250 events, accepts exact event type, source, and
+correlation filters, caps nodes at 1,000 and semantic links at 2,000, and marks causal parents outside
+the visible window. A `truncated` flag identifies trace chains beyond the 1,000-event or 2,000-log
 view bounds.
 `GET /api/stats` and `/stats` aggregate model usage globally and by model, plus tool advertisements,
 distinct dispatches, calls, outcomes, schema-token estimates, and execution duration. Pricing comes from

@@ -7,7 +7,27 @@
   <div id="trace-status" class="trace-status muted" role="status">Loading latest activity…</div>
   <section id="trace-summary" class="trace-summary" hidden></section>
   <section class="trace-workspace">
-    <div class="trace-map-panel"><div class="trace-map-heading"><div><span class="trace-rail-key event"></span>Events</div><div><span class="trace-rail-key operation"></span>Processing</div></div><div id="trace-map" class="trace-map"></div></div>
+    <div class="trace-map-panel">
+      <div class="trace-map-heading">
+        <div class="trace-view-tabs" role="tablist" aria-label="Trace view"><button id="timeline-tab" class="active" type="button" role="tab" aria-selected="true" aria-controls="trace-map" tabindex="0">Timeline</button><button id="graph-tab" type="button" role="tab" aria-selected="false" aria-controls="event-graph" tabindex="-1">Relationships</button></div>
+        <div class="trace-map-keys"><span><span class="trace-rail-key event"></span>Events</span><span><span class="trace-rail-key operation"></span>Processing</span></div>
+      </div>
+      <div id="trace-map" class="trace-map" role="tabpanel" aria-labelledby="timeline-tab"></div>
+      <section id="event-graph" class="event-graph" role="tabpanel" aria-labelledby="graph-tab" hidden>
+        <form id="graph-filters" class="graph-filters">
+          <label>Event type<input id="graph-type" name="type" type="text" placeholder="Exact type"></label>
+          <label>Source<input id="graph-source" name="source" type="text" placeholder="Exact source"></label>
+          <label>Correlation ID<input id="graph-correlation" name="correlation_id" type="text" placeholder="Optional UUID"></label>
+          <label>Newest nodes<select id="graph-limit" name="limit"><option>100</option><option selected>250</option><option>500</option><option>1000</option></select></label>
+          <button class="primary" type="submit">Apply</button>
+        </form>
+        <div class="graph-toolbar" aria-label="Graph controls"><button id="graph-zoom-in" type="button" title="Zoom in">+</button><button id="graph-zoom-out" type="button" title="Zoom out">−</button><button id="graph-fit" type="button">Fit</button><button id="graph-clear" type="button">Clear highlight</button><span>Drag to pan · scroll to zoom</span></div>
+        <div class="graph-stage"><svg id="graph-svg" aria-hidden="true" focusable="false"><defs><marker id="graph-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z"></path></marker></defs><g id="graph-viewport"></g></svg><div id="graph-empty" class="graph-empty" hidden>No events match these filters.</div></div>
+        <details class="graph-event-index"><summary>Keyboard-accessible event list</summary><div id="graph-event-list" class="graph-event-list" role="list" aria-label="Visible events"></div></details>
+        <div class="graph-legend" aria-label="Graph legend"><span><i class="causal"></i>Causation →</span><span><i class="semantic"></i>Semantic relation</span><span><i class="correlated"></i>Selected correlation</span><span><i class="boundary"></i>Parent outside window</span></div>
+        <div id="graph-status" class="graph-status muted" role="status"></div>
+      </section>
+    </div>
     <aside id="trace-inspector" class="trace-inspector"><div class="trace-empty"><img src="/assets/habibi-logo.svg" alt=""><p>Select a node to inspect its complete data.</p></div></aside>
   </section>
 </main>

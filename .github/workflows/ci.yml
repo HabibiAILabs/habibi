@@ -17,6 +17,11 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: node --check web/trace.js && node --check web/graph-layout.mjs
+      - run: node web/graph-layout.test.mjs
       - run: cargo fmt --all -- --check
       - run: cargo test
       - run: cargo clippy --all-targets -- -D warnings

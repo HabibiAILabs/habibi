@@ -62,10 +62,12 @@ pub fn router(state: WebState) -> Router {
         .route("/assets/events.js", get(events_js_asset))
         .route("/assets/logs.js", get(logs_js_asset))
         .route("/assets/trace.js", get(trace_js_asset))
+        .route("/assets/graph-layout.mjs", get(graph_layout_js_asset))
         .route("/assets/markdown.js", get(markdown_js_asset))
         .route("/assets/stats.js", get(stats_js_asset))
         .route("/assets/studio.js", get(studio_js_asset))
         .route("/api/events", get(list_events))
+        .route("/api/event-graph", get(event_graph))
         .route("/api/events/stream", get(stream_events))
         .route("/api/logs", get(list_logs))
         .route("/api/trace", get(trace))
@@ -182,6 +184,13 @@ async fn trace_js_asset() -> Response {
     )
 }
 
+async fn graph_layout_js_asset() -> Response {
+    asset_response(
+        "text/javascript; charset=utf-8",
+        include_bytes!("../web/graph-layout.mjs"),
+    )
+}
+
 async fn markdown_js_asset() -> Response {
     asset_response(
         "text/javascript; charset=utf-8",
@@ -228,6 +237,88 @@ async fn list_events(State(state): State<WebState>, Query(query): Query<EventsQu
             json!({ "error": error.to_string() }),
         ),
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct EventGraphQuery {
+    #[serde(rename = "type")]
+    event_type: Option<String>,
+    source: Option<String>,
+    correlation_id: Option<String>,
+    limit: Option<usize>,
+}
+
+async fn event_graph(
+    State(state): State<WebState>,
+    Query(query): Query<EventGraphQuery>,
+) -> Response {
+    let result: anyhow::Result<Value> = (|| {
+        let (event_query, limit) = build_event_graph_query(query)?;
+        let locked = state
+            .store
+            .lock()
+            .map_err(|_| anyhow::anyhow!("event store lock poisoned"))?;
+        let mut events = locked.query_events(&event_query)?;
+        let events_truncated = events.len() > limit;
+        if events_truncated {
+            events.remove(0);
+        }
+        let event_ids = events
+            .iter()
+            .map(|stored| stored.event.id)
+            .collect::<Vec<_>>();
+        let mut links = locked.event_links_for_events(&event_ids, 2_001)?;
+        let links_truncated = links.len() > 2_000;
+        if links_truncated {
+            links.pop();
+        }
+        Ok(build_event_graph_response(
+            events,
+            links,
+            events_truncated,
+            links_truncated,
+        ))
+    })();
+    match result {
+        Ok(graph) => json_response(StatusCode::OK, graph),
+        Err(error) => json_response(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": error.to_string() }),
+        ),
+    }
+}
+
+fn build_event_graph_query(query: EventGraphQuery) -> anyhow::Result<(StoreEventQuery, usize)> {
+    let correlation_id = query
+        .correlation_id
+        .filter(|value| !value.is_empty())
+        .map(|value| Uuid::parse_str(&value))
+        .transpose()?;
+    let limit = query.limit.unwrap_or(250).clamp(1, 1_000);
+    Ok((
+        StoreEventQuery {
+            event_type: query.event_type.filter(|value| !value.is_empty()),
+            source: query.source.filter(|value| !value.is_empty()),
+            correlation_id,
+            limit: limit + 1,
+            ..StoreEventQuery::default()
+        },
+        limit,
+    ))
+}
+
+fn build_event_graph_response(
+    events: Vec<crate::event::StoredEvent>,
+    links: Vec<Value>,
+    events_truncated: bool,
+    links_truncated: bool,
+) -> Value {
+    json!({
+        "events": events,
+        "links": links,
+        "events_truncated": events_truncated,
+        "links_truncated": links_truncated,
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -1478,6 +1569,75 @@ fn json_response(status: StatusCode, value: Value) -> Response {
 mod tests {
     use super::*;
     use crate::event::StoredEvent;
+
+    #[test]
+    fn event_graph_query_preserves_filters_and_clamps_the_sentinel_limit() {
+        let correlation = Uuid::now_v7();
+        let (query, limit) = build_event_graph_query(EventGraphQuery {
+            event_type: Some("chat.message.created".into()),
+            source: Some("extension:chat".into()),
+            correlation_id: Some(correlation.to_string()),
+            limit: Some(usize::MAX),
+        })
+        .unwrap();
+        assert_eq!(limit, 1_000);
+        assert_eq!(query.limit, 1_001);
+        assert_eq!(query.event_type.as_deref(), Some("chat.message.created"));
+        assert_eq!(query.source.as_deref(), Some("extension:chat"));
+        assert_eq!(query.correlation_id, Some(correlation));
+
+        let (minimum, limit) = build_event_graph_query(EventGraphQuery {
+            event_type: None,
+            source: None,
+            correlation_id: None,
+            limit: Some(0),
+        })
+        .unwrap();
+        assert_eq!(limit, 1);
+        assert_eq!(minimum.limit, 2);
+        assert!(
+            build_event_graph_query(EventGraphQuery {
+                event_type: None,
+                source: None,
+                correlation_id: Some("not-a-uuid".into()),
+                limit: None,
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn event_graph_preserves_event_relationship_facts_and_bounds() {
+        let correlation = Uuid::now_v7();
+        let root = Event::new("test.root", "test", correlation, None, json!({}));
+        let child = Event::new("test.child", "test", correlation, Some(root.id), json!({}));
+        let response = build_event_graph_response(
+            vec![
+                StoredEvent {
+                    sequence: 1,
+                    event: root.clone(),
+                },
+                StoredEvent {
+                    sequence: 2,
+                    event: child.clone(),
+                },
+            ],
+            vec![json!({
+                "link_id": "link-1",
+                "from_event_id": root.id,
+                "to_event_id": child.id,
+                "relation": "supports",
+                "bidirectional": false,
+            })],
+            true,
+            false,
+        );
+        assert_eq!(response["events"][1]["causation_id"], json!(root.id));
+        assert_eq!(response["events"][1]["correlation_id"], json!(correlation));
+        assert_eq!(response["links"][0]["relation"], "supports");
+        assert_eq!(response["events_truncated"], true);
+        assert_eq!(response["links_truncated"], false);
+    }
 
     #[test]
     fn trace_reports_each_events_causal_root_and_children() {
