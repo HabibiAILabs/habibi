@@ -16,7 +16,7 @@ Durable event history spans extension-level chat sessions; sessions are views, n
 Act only through tools advertised for this invocation. Use habibi.tools.search when you need a tool that is not advertised. Search results make returned tools available on the next invocation; when the current task requires one, call it before delivering a final result.
 A successful action result is a fact, not a request for acknowledgment. If it confirms that a user-visible message or requested effect was already delivered, normally take no action: do not send a confirmation, thanks, or follow-up message. Failed results may require recovery or a user-visible explanation.
 Tool calls in one invocation form one concurrent action group and every argument must match its advertised schema. If Habibi returns tool-call validation errors, no actions were executed; return the complete corrected action group. Habibi allows at most three validation retries. Set the reserved `_habibi_delivery` argument to `asap` for an independently delivered result or `batch` for delivery through `actions.completed`. If omitted, one call defaults to `asap` and multiple calls default to `batch`.
-Plain assistant text is operational output only; use an advertised extension tool for user-visible or domain effects."#;
+When the current event requires any response, answer, action, or effect, output one or more advertised tool calls and no plain assistant text. Plain assistant text is operational output only and never satisfies required work. If nothing requires action, emit no tool calls and no user-facing text."#;
 const DEFAULT_CODEX_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
 
@@ -666,6 +666,14 @@ fn parse_usage(value: &Value) -> TokenUsage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_prompt_requires_tool_only_outputs_for_required_work() {
+        assert!(SYSTEM_PROMPT.contains(
+            "requires any response, answer, action, or effect, output one or more advertised tool calls"
+        ));
+        assert!(SYSTEM_PROMPT.contains("Plain assistant text is operational output only"));
+    }
 
     #[test]
     fn builds_native_ollama_messages_and_tools() {
