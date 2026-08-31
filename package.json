@@ -1,0 +1,17 @@
+{
+  "name": "habibi-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:memory-graph": "vite build",
+    "check:memory-graph": "tsc --noEmit && node --test web/graph-layout.test.mjs web/memory-graph-state.test.mjs web/memory-graph-vgpu.test.mjs"
+  },
+  "dependencies": {
+    "vgpu": "0.3.1"
+  },
+  "devDependencies": {
+    "@webgpu/types": "0.1.69",
+    "typescript": "5.9.2",
+    "vite": "8.2.2"
+  }
+}

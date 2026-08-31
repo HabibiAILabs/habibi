@@ -20,8 +20,10 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
-      - run: node --check web/trace.js && node --check web/graph-layout.mjs
-      - run: node web/graph-layout.test.mjs
+      - run: npm ci --ignore-scripts
+      - run: npm run build:memory-graph && git diff --exit-code -- web/generated
+      - run: npm run check:memory-graph
+      - run: node --check web/trace.js && node --check web/graph-layout.mjs && node --check web/memory-graph-state.mjs
       - run: cargo fmt --all -- --check
       - run: cargo test
       - run: cargo clippy --all-targets -- -D warnings

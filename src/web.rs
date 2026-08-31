@@ -63,6 +63,12 @@ pub fn router(state: WebState) -> Router {
         .route("/assets/logs.js", get(logs_js_asset))
         .route("/assets/trace.js", get(trace_js_asset))
         .route("/assets/graph-layout.mjs", get(graph_layout_js_asset))
+        .route(
+            "/assets/memory-graph-state.mjs",
+            get(memory_graph_state_js_asset),
+        )
+        .route("/assets/memory-graph.js", get(memory_graph_js_asset))
+        .route("/assets/vgpu-LICENSE.txt", get(vgpu_license_asset))
         .route("/assets/markdown.js", get(markdown_js_asset))
         .route("/assets/stats.js", get(stats_js_asset))
         .route("/assets/studio.js", get(studio_js_asset))
@@ -188,6 +194,27 @@ async fn graph_layout_js_asset() -> Response {
     asset_response(
         "text/javascript; charset=utf-8",
         include_bytes!("../web/graph-layout.mjs"),
+    )
+}
+
+async fn memory_graph_state_js_asset() -> Response {
+    asset_response(
+        "text/javascript; charset=utf-8",
+        include_bytes!("../web/memory-graph-state.mjs"),
+    )
+}
+
+async fn memory_graph_js_asset() -> Response {
+    asset_response(
+        "text/javascript; charset=utf-8",
+        include_bytes!("../web/generated/memory-graph.js"),
+    )
+}
+
+async fn vgpu_license_asset() -> Response {
+    asset_response(
+        "text/plain; charset=utf-8",
+        include_bytes!("../web/vgpu-LICENSE.txt"),
     )
 }
 

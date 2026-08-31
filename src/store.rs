@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -383,6 +383,22 @@ impl EventStore {
     }
 
     fn insert_event(&self, connection: &Connection, event: &Event) -> Result<i64> {
+        if event.event_type == "event.link.created" {
+            let from_event_id = event
+                .payload
+                .get("from_event_id")
+                .and_then(serde_json::Value::as_str)
+                .context("event.link.created missing 'from_event_id'")?;
+            let to_event_id = event
+                .payload
+                .get("to_event_id")
+                .and_then(serde_json::Value::as_str)
+                .context("event.link.created missing 'to_event_id'")?;
+            ensure!(
+                from_event_id != to_event_id,
+                "event links cannot relate an event to itself"
+            );
+        }
         connection.execute(
             "INSERT INTO events (
                 id, event_type, source, occurred_at,
@@ -1008,6 +1024,12 @@ impl EventStore {
                 .and_then(serde_json::Value::as_str)
                 .with_context(|| format!("event.link.created missing '{key}'"))
         };
+        let from_event_id = string("from_event_id")?;
+        let to_event_id = string("to_event_id")?;
+        ensure!(
+            from_event_id != to_event_id,
+            "event links cannot relate an event to itself"
+        );
         connection.execute(
             "INSERT OR IGNORE INTO event_links (
                 link_id, from_event_id, to_event_id, relation, description,
@@ -1015,8 +1037,8 @@ impl EventStore {
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7)",
             params![
                 string("link_id")?,
-                string("from_event_id")?,
-                string("to_event_id")?,
+                from_event_id,
+                to_event_id,
                 string("relation")?,
                 event
                     .payload
@@ -1711,6 +1733,36 @@ mod tests {
             .unwrap();
         assert_eq!(links.len(), 1);
         assert_eq!(links[0]["event"]["id"], from.id.to_string());
+    }
+
+    #[test]
+    fn rejects_self_referential_event_links_transactionally() {
+        let store = EventStore::open(":memory:").unwrap();
+        let event_id = Uuid::now_v7();
+        let link = Event::new(
+            "event.link.created",
+            "habibi",
+            Uuid::now_v7(),
+            None,
+            json!({
+                "link_id": "self-link",
+                "from_event_id": event_id,
+                "to_event_id": event_id,
+                "relation": "related",
+                "bidirectional": true,
+            }),
+        );
+        let error = store.append_and_enqueue(&link).unwrap_err().to_string();
+        assert!(
+            error.contains("cannot relate an event to itself"),
+            "{error}"
+        );
+        assert!(
+            store
+                .get_event(Some(&link.id.to_string()), None)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

@@ -1,4 +1,6 @@
-import { compensateAnchor, createLiveBatch, createRequestGate, expireLiveIds, fitTransform, intersectEventIds, layoutEvents, nearestNode, pruneLiveIds, trimLine } from "/assets/graph-layout.mjs";
+import { createLiveBatch, createPermanentFailure, createRequestGate, expireLiveIds, intersectEventIds, pruneLiveIds } from "/assets/graph-layout.mjs";
+import { buildMemoryScene, pickMemoryNode } from "/assets/memory-graph-state.mjs";
+import { createMemoryGraphRenderer } from "/assets/memory-graph.js";
 
 const form = document.querySelector("#trace-search");
 const idInput = document.querySelector("#trace-id");
@@ -21,47 +23,44 @@ const graphCorrelation = document.querySelector("#graph-correlation");
 const graphLimit = document.querySelector("#graph-limit");
 const graphStatus = document.querySelector("#graph-status");
 const graphEmpty = document.querySelector("#graph-empty");
-const graphSvg = document.querySelector("#graph-svg");
-const graphViewport = document.querySelector("#graph-viewport");
+const graphCanvas = document.querySelector("#memory-graph-canvas");
+const graphFatal = document.querySelector("#graph-fatal");
+const graphRendererName = document.querySelector("#graph-renderer-name");
 const graphEventList = document.querySelector("#graph-event-list");
 const graphTooltip = document.querySelector("#graph-tooltip");
 const graphLiveButton = document.querySelector("#graph-live");
 const graphLiveStatus = document.querySelector("#graph-live-status");
 const graphFocusButton = document.querySelector("#graph-focus");
-const svgNamespace = "http://www.w3.org/2000/svg";
 let trace = null;
 let graph = null;
 let selectedKey = null;
 let selectedGraphId = null;
 let liveTimer = null;
-let graphWorld = { width: 1200, height: 620 };
-let graphPositions = new Map();
-let graphTransform = { x: 0, y: 0, scale: 1 };
 let graphDrag = null;
+const graphPointers = new Map();
+let graphPinchDistance = 0;
+let graphRenderer = null;
+let graphRendererPromise = null;
+let graphRendererError = null;
+const graphFailure = createPermanentFailure(shutdownGraph);
+let memoryScene = null;
 let hoveredGraphId = null;
 let graphFilters = null;
 let graphEventSource = null;
 let graphLiveEnabled = true;
-let graphInitialFit = true;
 const recentLiveIds = new Map();
 const knownGraphTypes = new Set();
 let graphLiveExpiryTimer = null;
 const graphRequestGate = createRequestGate();
 let graphAbortController = null;
-let graphResizeTimer = null;
 const graphLiveBatch = createLiveBatch(ids => {
-  if (!graphPanel.hidden && graphLiveEnabled) openGraph({ preserveViewport: true, liveIds: ids, activeFilters: graphFilters }).catch(handleGraphError);
+  if (!graphFailure.error && !graphPanel.hidden && graphLiveEnabled) openGraph({ liveIds: ids, activeFilters: graphFilters }).catch(handleGraphError);
 });
 
 const el = (tag, className, text) => {
   const node = document.createElement(tag);
   if (className) node.className = className;
   if (text !== undefined) node.textContent = text;
-  return node;
-};
-const svgEl = (tag, attributes = {}) => {
-  const node = document.createElementNS(svgNamespace, tag);
-  Object.entries(attributes).forEach(([name, value]) => node.setAttribute(name, String(value)));
   return node;
 };
 const short = value => value ? `${String(value).slice(0, 8)}…${String(value).slice(-4)}` : "—";
@@ -354,14 +353,12 @@ function setView(view, { load = true } = {}) {
   graphTab.setAttribute("aria-selected", String(graphActive));
   timelineTab.tabIndex = graphActive ? -1 : 0;
   graphTab.tabIndex = graphActive ? 0 : -1;
+  if (!graphFailure.error) graphRenderer?.setActive(graphActive);
   const parameters = new URLSearchParams(location.search);
-  if (graphActive) parameters.set("view", "graph");
-  else parameters.delete("view");
+  if (graphActive) parameters.set("view", "graph"); else parameters.delete("view");
   history.replaceState(null, "", `/trace?${parameters}`);
-  if (graphActive && load) {
-    graphInitialFit = true;
-    openGraph().catch(handleGraphError);
-  } else if (!graphActive) {
+  if (graphActive && load && !graphFailure.error) openGraph().catch(handleGraphError);
+  else if (!graphActive) {
     cancelGraphRequest();
     closeGraphStream();
     clearLiveState();
@@ -382,6 +379,65 @@ function setGraphLiveStatus(text, className = "") {
   graphLiveStatus.className = `graph-live-status ${className}`.trim();
 }
 
+function showGraphFatal(message) {
+  graphFatal.hidden = false;
+  graphFatal.textContent = `${message} Reload this page after fixing WebGPU availability.`;
+  graphStatus.textContent = message;
+  graphStatus.classList.add("error");
+}
+
+function shutdownGraph(error) {
+  graphRendererError = error;
+  cancelGraphRequest();
+  closeGraphStream();
+  clearTimeout(graphLiveExpiryTimer);
+  graphLiveExpiryTimer = null;
+  recentLiveIds.clear();
+  graphLiveEnabled = false;
+  graphLiveButton.textContent = "Live unavailable";
+  graphLiveButton.setAttribute("aria-pressed", "false");
+  setGraphLiveStatus("Live stopped", "paused");
+  graphPanel.querySelectorAll(".graph-toolbar button, .graph-filters input, .graph-filters select, .graph-filters button").forEach(control => { control.disabled = true; });
+  const renderer = graphRenderer;
+  graphRenderer = null;
+  try { renderer?.dispose(); } catch { /* The fatal state is already permanent; never retry a failed disposal. */ }
+  graphRendererName.textContent = "vgpu/WebGPU stopped";
+  showGraphFatal(error.message);
+}
+
+function latchGraphFatal(message) {
+  const latched = graphFailure.latch(new Error(message));
+  if (!latched.first) showGraphFatal(latched.error.message);
+  return latched.error;
+}
+
+async function ensureGraphRenderer() {
+  if (graphFailure.error) throw graphFailure.error;
+  if (graphRenderer) return graphRenderer;
+  if (graphRendererError) throw graphRendererError;
+  if (!graphRendererPromise) {
+    graphRendererPromise = createMemoryGraphRenderer(graphCanvas, {
+      onFatal(message) {
+        latchGraphFatal(message);
+      },
+    }).then(renderer => {
+      if (graphFailure.error) {
+        renderer.dispose();
+        throw graphFailure.error;
+      }
+      graphRenderer = renderer;
+      graphRenderer.setActive(!graphPanel.hidden);
+      graphFatal.hidden = true;
+      graphRendererName.textContent = renderer.renderer;
+      return renderer;
+    }).catch(error => {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      throw latchGraphFatal(failure.message);
+    });
+  }
+  return graphRendererPromise;
+}
+
 function closeGraphStream() {
   graphEventSource?.close();
   graphEventSource = null;
@@ -390,13 +446,13 @@ function closeGraphStream() {
 
 function removeLiveMarkers(ids) {
   ids.forEach(id => {
-    graphViewport.querySelector(`[data-id="${CSS.escape(id)}"]`)?.classList.remove("live");
     const button = graphEventList.querySelector(`[data-id="${CSS.escape(id)}"]`);
     if (button) {
       button.classList.remove("live");
       button.textContent = button.dataset.label;
     }
   });
+  updateMemoryScene();
 }
 
 function clearLiveState() {
@@ -410,7 +466,7 @@ function clearLiveState() {
 function scheduleLiveExpiry() {
   clearTimeout(graphLiveExpiryTimer);
   graphLiveExpiryTimer = null;
-  if (!recentLiveIds.size) return;
+  if (graphFailure.error || !recentLiveIds.size) return;
   const delay = Math.max(0, Math.min(...recentLiveIds.values()) - Date.now());
   graphLiveExpiryTimer = setTimeout(() => {
     graphLiveExpiryTimer = null;
@@ -421,23 +477,19 @@ function scheduleLiveExpiry() {
 
 function subscribeGraph() {
   closeGraphStream();
-  if (!graphLiveEnabled || graphPanel.hidden || !graphFilters || !("EventSource" in globalThis)) {
+  if (graphFailure.error) return;
+  if (!graphLiveEnabled || graphPanel.hidden || !graphFilters || !graph) {
     setGraphLiveStatus(graphLiveEnabled ? "Live unavailable" : "Live paused", "paused");
     return;
   }
-  const query = new URLSearchParams();
-  query.set("after_sequence", String(graph.cursor));
+  const query = new URLSearchParams({ after_sequence: String(graph.cursor) });
   if (graphFilters.eventType) query.set("exact_type", graphFilters.eventType);
   if (graphFilters.correlation) query.set("correlation_id", graphFilters.correlation);
   setGraphLiveStatus("Live connecting…", "reconnecting");
   const source = new EventSource(`/api/events/stream?${query}`);
   graphEventSource = source;
-  source.addEventListener("open", () => {
-    if (graphEventSource === source) setGraphLiveStatus("Live connected");
-  });
-  source.addEventListener("error", () => {
-    if (graphEventSource === source) setGraphLiveStatus("Live reconnecting…", "reconnecting");
-  });
+  source.addEventListener("open", () => { if (graphEventSource === source) setGraphLiveStatus("Live connected"); });
+  source.addEventListener("error", () => { if (graphEventSource === source) setGraphLiveStatus("Live reconnecting…", "reconnecting"); });
   source.addEventListener("habibi.event", message => {
     if (graphEventSource !== source) return;
     const event = JSON.parse(message.data);
@@ -448,26 +500,25 @@ function subscribeGraph() {
   });
 }
 
-async function openGraph({ preserveViewport = false, liveIds = [], activeFilters = null } = {}) {
+async function openGraph({ liveIds = [], activeFilters = null } = {}) {
+  if (graphFailure.error) throw graphFailure.error;
   const filters = activeFilters || {
     eventType: graphType.value.trim(),
     source: graphSource.value.trim(),
     correlation: graphCorrelation.value.trim(),
     limit: graphLimit.value,
   };
-  const viewportAnchor = preserveViewport ? captureGraphAnchor() : null;
   closeGraphStream();
   const generation = graphRequestGate.next();
   graphAbortController?.abort();
   const controller = new AbortController();
   graphAbortController = controller;
   graphStatus.classList.remove("error");
-  graphStatus.textContent = "Loading event relationships…";
-  const query = new URLSearchParams();
+  graphStatus.textContent = "Loading memories…";
+  const query = new URLSearchParams({ limit: filters.limit });
   if (filters.eventType) query.set("type", filters.eventType);
   if (filters.source) query.set("source", filters.source);
   if (filters.correlation) query.set("correlation_id", filters.correlation);
-  query.set("limit", filters.limit);
   try {
     const result = await fetchJson(`/api/event-graph?${query}`, { signal: controller.signal });
     if (!graphRequestGate.isCurrent(generation)) return;
@@ -484,10 +535,11 @@ async function openGraph({ preserveViewport = false, liveIds = [], activeFilters
     history.replaceState(null, "", `/trace?${parameters}`);
     if (!graph.events.some(event => event.id === selectedGraphId)) selectedGraphId = null;
     pruneLiveIds(recentLiveIds, result.events);
-    const arrivingIds = new Set(intersectEventIds(liveIds, result.events));
-    arrivingIds.forEach(id => recentLiveIds.set(id, Date.now() + 6_000));
+    intersectEventIds(liveIds, result.events).forEach(id => recentLiveIds.set(id, Date.now() + 6000));
     scheduleLiveExpiry();
-    renderGraph({ preserveViewport, viewportAnchor, arrivingIds });
+    renderGraph();
+    await ensureGraphRenderer();
+    updateMemoryScene();
     subscribeGraph();
   } catch (error) {
     if (!graphRequestGate.isCurrent(generation) || error.name === "AbortError") return;
@@ -498,123 +550,57 @@ async function openGraph({ preserveViewport = false, liveIds = [], activeFilters
   }
 }
 
-function renderGraph({ preserveViewport = false, viewportAnchor = null, arrivingIds = new Set() } = {}) {
-  graphViewport.replaceChildren();
+function renderGraph() {
   graphEventList.replaceChildren();
   graphEmpty.hidden = graph.events.length > 0;
   if (!graph.events.length) {
-    graphPositions.clear();
-    graphWorld = { width: 1200, height: 620 };
     selectedGraphId = null;
     hoveredGraphId = null;
     graphFocusButton.disabled = true;
     graphTooltip.hidden = true;
     clearLiveState();
-    graphInitialFit = true;
-    graphStatus.textContent = "0 events.";
-    renderEmptyInspector("No event is available to inspect.");
+    graphStatus.textContent = "0 memories.";
+    renderEmptyInspector("No memory is available to inspect.");
     return;
   }
   expireLiveIds(recentLiveIds, Date.now());
-  const layout = layoutEvents(graph.events);
-  const events = layout.ordered;
-  const eventById = new Map(events.map(event => [event.id, event]));
-  if (hoveredGraphId && !eventById.has(hoveredGraphId)) {
-    hoveredGraphId = null;
-    graphTooltip.hidden = true;
-  }
-  graphWorld = { width: layout.width, height: layout.height };
-  const positions = layout.positions;
-  graphPositions = new Map(positions);
-  if (preserveViewport && viewportAnchor && graphPositions.has(viewportAnchor.id)) {
-    graphTransform = compensateAnchor(
-      graphTransform,
-      viewportAnchor.position,
-      graphPositions.get(viewportAnchor.id),
-    );
-  }
-
-  const causalEdges = [];
-  const boundaryParents = new Map();
-  events.forEach(event => {
-    if (!event.causation_id) return;
-    if (eventById.has(event.causation_id)) causalEdges.push({ source: event.causation_id, target: event.id, kind: "causal" });
-    else {
-      const child = positions.get(event.id);
-      if (!boundaryParents.has(event.causation_id)) {
-        boundaryParents.set(event.causation_id, { x: Math.max(20, child.x - 42), y: Math.max(24, child.y - 25) });
-      }
-      causalEdges.push({ source: event.causation_id, target: event.id, kind: "causal", boundary: true });
-    }
-  });
-  boundaryParents.forEach((position, id) => positions.set(id, position));
-
-  let boundaryLinks = 0;
-  const semanticEdges = graph.links.flatMap(link => {
-    if (!eventById.has(link.from_event_id) || !eventById.has(link.to_event_id)) {
-      boundaryLinks += 1;
-      return [];
-    }
-    return [{ source: link.from_event_id, target: link.to_event_id, kind: "semantic", link }];
-  });
-  [...causalEdges, ...semanticEdges].forEach(edge => graphViewport.append(graphEdge(edge, positions, eventById)));
-  boundaryParents.forEach((position, id) => graphViewport.append(boundaryNode(id, position)));
-  events.forEach(event => {
-    graphViewport.append(graphNode(event, positions.get(event.id), events.length <= 120, arrivingIds.has(event.id)));
-    graphEventList.append(accessibleGraphNode(event));
-  });
-  applyGraphHighlight();
-  const selected = events.find(event => event.id === selectedGraphId);
+  graph.events.forEach(event => graphEventList.append(accessibleGraphNode(event)));
+  const selected = graph.events.find(event => event.id === selectedGraphId);
   graphFocusButton.disabled = !selected;
-  if (selected) renderGraphInspector(selected);
-  else renderEmptyInspector("Select an event to highlight its correlation and inspect its complete data.");
-  if (!preserveViewport || graphInitialFit) requestAnimationFrame(fitGraph);
-  else applyGraphTransform();
-  graphInitialFit = false;
+  if (selected) renderGraphInspector(selected); else renderEmptyInspector("Select a memory to inspect its causal family and correlation.");
+  renderGraphStatus(0);
+}
+
+function renderGraphStatus(boundaryCausal) {
+  const visibleLinks = graph.links.filter(link => graph.events.some(event => event.id === link.from_event_id) && graph.events.some(event => event.id === link.to_event_id)).length;
   const notices = [];
-  if (graph.events_truncated) notices.push("older events omitted by the node limit");
+  if (boundaryCausal) notices.push(`${boundaryCausal} missing causal parent ${boundaryCausal === 1 ? "boundary" : "boundaries"}`);
+  if (graph.events_truncated) notices.push("older memories omitted by the node limit");
   if (graph.links_truncated) notices.push("semantic links capped at 2,000");
-  if (boundaryParents.size) notices.push(`${boundaryParents.size} causal parents outside the window`);
-  if (boundaryLinks) notices.push(`${boundaryLinks} semantic links cross the visible boundary`);
-  graphStatus.textContent = `${events.length} events · ${causalEdges.length} causal edges · ${semanticEdges.length} visible semantic edges${notices.length ? ` · ${notices.join(" · ")}` : ""}.`;
+  graphStatus.textContent = `${graph.events.length} memories · ${visibleLinks} visible semantic links${notices.length ? ` · ${notices.join(" · ")}` : ""}.`;
 }
 
-function graphEdge(edge, positions, eventById) {
-  const source = positions.get(edge.source);
-  const target = positions.get(edge.target);
-  const bidirectional = Boolean(edge.link?.bidirectional);
-  const trimmed = trimLine(source, target, bidirectional ? 13 : edge.boundary ? 10 : 9, 13);
-  const pathData = trimmed
-    ? `M ${trimmed.source.x} ${trimmed.source.y} L ${trimmed.target.x} ${trimmed.target.y}`
-    : `M ${source.x + 10} ${source.y} C ${source.x + 28} ${source.y - 28}, ${source.x - 28} ${source.y - 28}, ${source.x - 10} ${source.y}`;
-  const path = svgEl("path", {
-    d: pathData,
-    class: `graph-edge ${edge.kind}${bidirectional ? " bidirectional" : ""}`,
-    "data-source": edge.source,
-    "data-target": edge.target,
+function updateMemoryScene() {
+  if (graphFailure.error || !graph || !graphRenderer) return;
+  memoryScene = buildMemoryScene(graph.events, graph.links, {
+    selectedId: selectedGraphId,
+    hoveredId: hoveredGraphId,
+    liveIds: recentLiveIds,
   });
-  const sourceCorrelation = eventById.get(edge.source)?.correlation_id;
-  const targetCorrelation = eventById.get(edge.target)?.correlation_id;
-  if (sourceCorrelation) path.dataset.sourceCorrelation = sourceCorrelation;
-  if (targetCorrelation) path.dataset.targetCorrelation = targetCorrelation;
-  const title = svgEl("title");
-  title.textContent = edge.kind === "causal"
-    ? `Causation: ${short(edge.source)} → ${short(edge.target)}`
-    : `${edge.link.relation}${edge.link.description ? ` — ${edge.link.description}` : ""}`;
-  path.append(title);
-  return path;
-}
-
-function eventFamily(event) {
-  if (event.event_type.startsWith("chat.")) return "chat";
-  if (event.event_type.startsWith("action.") || event.event_type === "actions.completed") return "action";
-  if (event.source.startsWith("extension:") || event.source.startsWith("tool:")) return "extension";
-  return "system";
+  graphRenderer.setScene(memoryScene);
+  graphEventList.querySelector(".graph-boundary-note")?.remove();
+  if (memoryScene.boundaryCausal) {
+    const note = el("div", "graph-boundary-note", `${memoryScene.boundaryCausal} ${memoryScene.boundaryCausal === 1 ? "memory has a parent" : "memories have parents"} outside this window; dashed amber boundary markers show those missing parents.`);
+    note.setAttribute("role", "listitem");
+    graphEventList.append(note);
+  }
+  renderGraphStatus(memoryScene.boundaryCausal);
+  graphEventList.querySelectorAll("button[data-id]").forEach(button => button.setAttribute("aria-pressed", String(button.dataset.id === selectedGraphId)));
 }
 
 function renderGraphFilterUi(filters) {
   const active = [filters.eventType && `type ${filters.eventType}`, filters.source && `source ${filters.source}`, filters.correlation && `correlation ${short(filters.correlation)}`].filter(Boolean);
-  graphFilterSummary.textContent = active.length ? active.join(" · ") : "All live events";
+  graphFilterSummary.textContent = active.length ? active.join(" · ") : "All live memories";
   graphEventTypes.replaceChildren(...[...knownGraphTypes].sort().map(type => {
     const option = document.createElement("option");
     option.value = type;
@@ -622,95 +608,27 @@ function renderGraphFilterUi(filters) {
   }));
 }
 
-function graphNode(event, position, showLabel, arriving) {
-  const live = recentLiveIds.has(event.id);
-  const group = svgEl("g", {
-    class: `event-graph-node family-${eventFamily(event)}${live ? " live" : ""}${arriving ? " arriving" : ""}`,
-    transform: `translate(${position.x} ${position.y})`,
-    "data-id": event.id,
-    "data-correlation": event.correlation_id,
-  });
-  const circle = svgEl("circle", { class: "graph-node-circle", r: selectedGraphId === event.id ? 9 : 7 });
-  const title = svgEl("title");
-  title.textContent = `${event.event_type}\n${event.id}\nCorrelation ${event.correlation_id}`;
-  circle.append(title);
-  group.append(circle);
-  if (showLabel) {
-    const label = svgEl("text", { x: 11, y: 4 });
-    label.textContent = event.event_type.length > 28 ? `${event.event_type.slice(0, 27)}…` : event.event_type;
-    group.append(label);
-  }
-  return group;
-}
-
 function accessibleGraphNode(event) {
   const item = el("div");
   item.setAttribute("role", "listitem");
   const live = recentLiveIds.has(event.id);
-  const button = el("button", live ? "live" : "", `${live ? "New · " : ""}E${event.sequence} · ${event.event_type} · correlation ${short(event.correlation_id)}`);
+  const label = `E${event.sequence} · ${event.event_type} · correlation ${short(event.correlation_id)}`;
+  const button = el("button", live ? "live" : "", `${live ? "New memory · " : ""}${label}`);
   button.type = "button";
   button.dataset.id = event.id;
-  button.dataset.label = `E${event.sequence} · ${event.event_type} · correlation ${short(event.correlation_id)}`;
+  button.dataset.label = label;
   button.setAttribute("aria-pressed", String(event.id === selectedGraphId));
-  button.title = `${event.event_type}\n${event.id}\nCorrelation ${event.correlation_id}`;
-  button.addEventListener("click", () => {
-    selectGraphEvent(event.id);
-    centerGraphEvent(event.id);
-  });
+  button.addEventListener("click", () => { selectGraphEvent(event.id); focusGraphEvent(event.id); });
   item.append(button);
   return item;
-}
-
-function boundaryNode(id, position) {
-  const group = svgEl("g", {
-    class: "event-graph-node boundary",
-    transform: `translate(${position.x} ${position.y})`,
-    "aria-label": `Parent ${id} outside visible window`,
-  });
-  group.append(svgEl("rect", { x: -6, y: -6, width: 12, height: 12, rx: 2 }));
-  const title = svgEl("title");
-  title.textContent = `Causal parent outside visible window: ${id}`;
-  group.append(title);
-  return group;
 }
 
 function selectGraphEvent(id) {
   selectedGraphId = id;
   graphFocusButton.disabled = false;
-  applyGraphHighlight();
+  updateMemoryScene();
   const event = graph.events.find(candidate => candidate.id === id);
   if (event) renderGraphInspector(event);
-}
-
-function applyGraphHighlight() {
-  const selected = graph?.events.find(event => event.id === selectedGraphId);
-  const correlation = selected?.correlation_id;
-  const neighbors = new Set(hoveredGraphId ? [hoveredGraphId] : []);
-  graphViewport.querySelectorAll(".graph-edge").forEach(edge => {
-    const hovered = Boolean(hoveredGraphId) && (edge.dataset.source === hoveredGraphId || edge.dataset.target === hoveredGraphId);
-    if (hovered) {
-      neighbors.add(edge.dataset.source);
-      neighbors.add(edge.dataset.target);
-    }
-    const correlated = Boolean(correlation) && (edge.dataset.sourceCorrelation === correlation || edge.dataset.targetCorrelation === correlation);
-    edge.classList.toggle("hovered", hovered);
-    edge.classList.toggle("highlighted", !hoveredGraphId && correlated);
-    edge.classList.toggle("dimmed", hoveredGraphId ? !hovered : Boolean(correlation) && !correlated);
-  });
-  graphViewport.querySelectorAll(".event-graph-node:not(.boundary)").forEach(node => {
-    const isSelected = node.dataset.id === selectedGraphId;
-    const isHovered = node.dataset.id === hoveredGraphId;
-    const isNeighbor = Boolean(hoveredGraphId) && neighbors.has(node.dataset.id) && !isHovered;
-    node.classList.toggle("selected", isSelected);
-    node.classList.toggle("hovered", isHovered);
-    node.classList.toggle("neighbor", isNeighbor);
-    node.classList.toggle("correlated", !hoveredGraphId && Boolean(correlation) && node.dataset.correlation === correlation && !isSelected);
-    node.classList.toggle("dimmed", hoveredGraphId ? !neighbors.has(node.dataset.id) : Boolean(correlation) && node.dataset.correlation !== correlation);
-    node.querySelector(".graph-node-circle")?.setAttribute("r", isSelected || isHovered ? "9" : "7");
-  });
-  graphEventList.querySelectorAll("button[data-id]").forEach(button => {
-    button.setAttribute("aria-pressed", String(button.dataset.id === selectedGraphId));
-  });
 }
 
 function renderEmptyInspector(message) {
@@ -723,43 +641,25 @@ function renderEmptyInspector(message) {
 }
 
 function renderGraphInspector(event) {
+  const scene = buildMemoryScene(graph.events, graph.links, { selectedId: event.id, liveIds: recentLiveIds });
   inspector.replaceChildren();
   const heading = el("div", "trace-inspector-heading");
-  heading.append(el("p", "eyebrow", "EVENT GRAPH NODE"), el("h2", "", event.event_type), el("time", "muted", new Date(event.occurred_at).toLocaleString()));
+  heading.append(el("p", "eyebrow", "DURABLE MEMORY"), el("h2", "", event.event_type), el("time", "muted", new Date(event.occurred_at).toLocaleString()));
   const grid = el("div", "trace-identity-grid");
   grid.append(identity("ID", event.id), identity("Sequence", String(event.sequence)), identity("Cause", event.causation_id), identity("Correlation", event.correlation_id));
   const relationships = graph.links.filter(link => link.from_event_id === event.id || link.to_event_id === event.id);
+  const memoryStats = {
+    visible_ancestors: scene.family.ancestors.size,
+    visible_descendants: scene.family.descendants.size,
+    omitted_parent_boundary: scene.family.omittedAncestors,
+    correlated_memories: graph.events.filter(candidate => candidate.correlation_id === event.correlation_id).length,
+  };
   const open = el("button", "primary", "Open causal trace");
   open.type = "button";
   open.addEventListener("click", () => openGraphTrace(event.id));
-  inspector.append(heading, grid, open, section("Event payload", event.payload));
+  inspector.append(heading, grid, open, section("Visible memory family", memoryStats), section("Event payload", event.payload));
   if (relationships.length) inspector.append(section("Semantic relationships", relationships));
   inspector.append(disclosure("Complete record", event));
-}
-
-function captureGraphAnchor() {
-  if (!graphPositions.size) return null;
-  if (selectedGraphId && graphPositions.has(selectedGraphId)) {
-    return { id: selectedGraphId, position: { ...graphPositions.get(selectedGraphId) } };
-  }
-  const width = graphSvg.clientWidth || 800;
-  const height = graphSvg.clientHeight || 620;
-  const center = { x: width / 2, y: height / 2 };
-  let best = null;
-  let bestDistance = Infinity;
-  for (const [id, position] of graphPositions) {
-    const screen = {
-      x: graphTransform.x + position.x * graphTransform.scale,
-      y: graphTransform.y + position.y * graphTransform.scale,
-    };
-    if (screen.x < 0 || screen.x > width || screen.y < 0 || screen.y > height) continue;
-    const distance = Math.hypot(screen.x - center.x, screen.y - center.y);
-    if (distance < bestDistance) {
-      best = { id, position: { ...position } };
-      bestDistance = distance;
-    }
-  }
-  return best;
 }
 
 function openGraphTrace(id) {
@@ -768,32 +668,34 @@ function openGraphTrace(id) {
 }
 
 function graphIdAtClientPoint(clientX, clientY, radius = 20) {
-  const bounds = graphSvg.getBoundingClientRect();
-  return nearestNode(graphPositions, {
-    x: (clientX - bounds.left - graphTransform.x) / graphTransform.scale,
-    y: (clientY - bounds.top - graphTransform.y) / graphTransform.scale,
-  }, radius / graphTransform.scale);
+  if (graphFailure.error || !memoryScene || !graphRenderer) return null;
+  const bounds = graphCanvas.getBoundingClientRect();
+  const scaleX = bounds.width / graphCanvas.width;
+  const scaleY = bounds.height / graphCanvas.height;
+  const candidates = memoryScene.nodes.map(node => {
+    const point = graphRenderer.project(node.position);
+    return {
+      id: node.id,
+      x: bounds.left + point.x * scaleX,
+      y: bounds.top + point.y * scaleY,
+      depth: point.depth,
+      radius: node.radius * Math.max(scaleX, scaleY),
+      visible: node.pickable,
+    };
+  });
+  return pickMemoryNode(candidates, clientX, clientY, radius);
 }
 
 function showGraphHover(clientX, clientY) {
   const id = graphIdAtClientPoint(clientX, clientY, 18);
-  if (hoveredGraphId !== id) {
-    hoveredGraphId = id;
-    applyGraphHighlight();
-  }
-  if (!id) {
-    graphTooltip.hidden = true;
-    return;
-  }
+  if (hoveredGraphId !== id) { hoveredGraphId = id; updateMemoryScene(); }
+  if (!id) { graphTooltip.hidden = true; return; }
   const event = graph.events.find(candidate => candidate.id === id);
   if (!event) return;
   graphTooltip.textContent = `${event.event_type}\n${event.source} · E${event.sequence}\nCorrelation ${event.correlation_id}`;
   const stage = graphTooltip.parentElement;
   const bounds = stage.getBoundingClientRect();
   graphTooltip.hidden = false;
-  graphTooltip.style.right = "auto";
-  graphTooltip.style.left = `${clientX - bounds.left + 12}px`;
-  graphTooltip.style.top = `${clientY - bounds.top + 12}px`;
   const maximumLeft = Math.max(8, stage.clientWidth - graphTooltip.offsetWidth - 8);
   const maximumTop = Math.max(8, stage.clientHeight - graphTooltip.offsetHeight - 8);
   graphTooltip.style.left = `${Math.min(maximumLeft, Math.max(8, clientX - bounds.left + 12))}px`;
@@ -804,43 +706,17 @@ function clearGraphHover() {
   if (!hoveredGraphId && graphTooltip.hidden) return;
   hoveredGraphId = null;
   graphTooltip.hidden = true;
-  applyGraphHighlight();
+  updateMemoryScene();
 }
 
 function focusGraphEvent(id) {
-  graphTransform.scale = Math.max(graphTransform.scale, 0.8);
-  centerGraphEvent(id);
+  if (graphFailure.error) return;
+  const node = memoryScene?.nodes.find(candidate => candidate.id === id);
+  if (node) graphRenderer?.focus(node.position);
 }
 
-function centerGraphEvent(id) {
-  const position = graphPositions.get(id);
-  if (!position) return;
-  graphTransform.x = graphSvg.clientWidth / 2 - position.x * graphTransform.scale;
-  graphTransform.y = graphSvg.clientHeight / 2 - position.y * graphTransform.scale;
-  applyGraphTransform();
-}
-
-function applyGraphTransform() {
-  graphViewport.setAttribute("transform", `translate(${graphTransform.x} ${graphTransform.y}) scale(${graphTransform.scale})`);
-}
-
-function fitGraph() {
-  graphTransform = fitTransform(graphWorld, {
-    width: graphSvg.clientWidth || 800,
-    height: graphSvg.clientHeight || 620,
-  });
-  applyGraphTransform();
-}
-
-function zoomGraph(factor, centerX = graphSvg.clientWidth / 2, centerY = graphSvg.clientHeight / 2) {
-  const next = Math.min(5, Math.max(.12, graphTransform.scale * factor));
-  const worldX = (centerX - graphTransform.x) / graphTransform.scale;
-  const worldY = (centerY - graphTransform.y) / graphTransform.scale;
-  graphTransform.x = centerX - worldX * next;
-  graphTransform.y = centerY - worldY * next;
-  graphTransform.scale = next;
-  applyGraphTransform();
-}
+function fitGraph() { if (!graphFailure.error) graphRenderer?.fit(); }
+function zoomGraph(factor) { if (!graphFailure.error) graphRenderer?.zoom(factor); }
 
 function showError(error) {
   status.textContent = error.message;
@@ -849,122 +725,91 @@ function showError(error) {
 
 function handleGraphError(error) {
   if (error.name === "AbortError") return;
-  graphStatus.textContent = error.message;
+  const message = error instanceof Error ? error.message : String(error);
+  if (graphFailure.error || message.includes("WebGPU") || message.includes("renderer is disposed")) {
+    latchGraphFatal(graphFailure.error?.message || message);
+    return;
+  }
+  graphStatus.textContent = message;
   graphStatus.classList.add("error");
-  graphEmpty.hidden = false;
 }
 
-form.addEventListener("submit", event => {
-  event.preventDefault();
-  status.classList.remove("error");
-  const value = idInput.value.trim();
-  if (value) openId(value).catch(showError);
-});
+form.addEventListener("submit", event => { event.preventDefault(); status.classList.remove("error"); const value = idInput.value.trim(); if (value) openId(value).catch(showError); });
 latestButton.addEventListener("click", () => openLatest().catch(showError));
 liveToggle.addEventListener("change", () => {
   clearInterval(liveTimer);
-  liveTimer = liveToggle.checked ? setInterval(() => {
-    if (trace) openTrace("correlation_id", trace.correlation_id, { preserveSelection: true }).catch(showError);
-  }, 3000) : null;
+  liveTimer = liveToggle.checked ? setInterval(() => { if (trace) openTrace("correlation_id", trace.correlation_id, { preserveSelection: true }).catch(showError); }, 3000) : null;
 });
 timelineTab.addEventListener("click", () => setView("timeline"));
 graphTab.addEventListener("click", () => setView("graph"));
-[timelineTab, graphTab].forEach((tab, index, tabs) => {
-  tab.addEventListener("keydown", event => {
-    let nextIndex = null;
-    if (event.key === "ArrowRight") nextIndex = (index + 1) % tabs.length;
-    else if (event.key === "ArrowLeft") nextIndex = (index - 1 + tabs.length) % tabs.length;
-    else if (event.key === "Home") nextIndex = 0;
-    else if (event.key === "End") nextIndex = tabs.length - 1;
-    if (nextIndex === null) return;
-    event.preventDefault();
-    const nextTab = tabs[nextIndex];
-    nextTab.focus();
-    setView(nextTab === graphTab ? "graph" : "timeline");
-  });
-});
-graphForm.addEventListener("submit", event => {
+[timelineTab, graphTab].forEach((tab, index, tabs) => tab.addEventListener("keydown", event => {
+  let nextIndex = null;
+  if (event.key === "ArrowRight") nextIndex = (index + 1) % tabs.length;
+  else if (event.key === "ArrowLeft") nextIndex = (index - 1 + tabs.length) % tabs.length;
+  else if (event.key === "Home") nextIndex = 0;
+  else if (event.key === "End") nextIndex = tabs.length - 1;
+  if (nextIndex === null) return;
   event.preventDefault();
-  graphInitialFit = true;
-  openGraph().catch(handleGraphError);
-});
-document.querySelector("#graph-reset-filters").addEventListener("click", () => {
-  graphType.value = "";
-  graphSource.value = "";
-  graphCorrelation.value = "";
-  graphInitialFit = true;
-  openGraph().catch(handleGraphError);
-});
-document.querySelector("#graph-zoom-in").addEventListener("click", () => zoomGraph(1.25));
-document.querySelector("#graph-zoom-out").addEventListener("click", () => zoomGraph(.8));
+  const nextTab = tabs[nextIndex];
+  nextTab.focus();
+  setView(nextTab === graphTab ? "graph" : "timeline");
+}));
+graphForm.addEventListener("submit", event => { event.preventDefault(); openGraph().catch(handleGraphError); });
+document.querySelector("#graph-reset-filters").addEventListener("click", () => { graphType.value = ""; graphSource.value = ""; graphCorrelation.value = ""; openGraph().catch(handleGraphError); });
+document.querySelector("#graph-zoom-in").addEventListener("click", () => zoomGraph(1.2));
+document.querySelector("#graph-zoom-out").addEventListener("click", () => zoomGraph(0.82));
 document.querySelector("#graph-fit").addEventListener("click", fitGraph);
-graphFocusButton.addEventListener("click", () => {
-  if (selectedGraphId) focusGraphEvent(selectedGraphId);
-});
+graphFocusButton.addEventListener("click", () => { if (selectedGraphId) focusGraphEvent(selectedGraphId); });
 graphLiveButton.addEventListener("click", () => {
   graphLiveEnabled = !graphLiveEnabled;
   graphLiveButton.textContent = graphLiveEnabled ? "Pause live" : "Resume live";
   graphLiveButton.setAttribute("aria-pressed", String(graphLiveEnabled));
-  if (graphLiveEnabled) subscribeGraph();
-  else {
-    closeGraphStream();
-    setGraphLiveStatus("Live paused", "paused");
-  }
+  if (graphLiveEnabled) subscribeGraph(); else { closeGraphStream(); setGraphLiveStatus("Live paused", "paused"); }
 });
 document.querySelector("#graph-clear").addEventListener("click", () => {
   selectedGraphId = null;
   graphFocusButton.disabled = true;
-  applyGraphHighlight();
-  renderEmptyInspector("Select an event to highlight its correlation and inspect its complete data.");
+  updateMemoryScene();
+  renderEmptyInspector("Select a memory to inspect its causal family and correlation.");
 });
-graphSvg.addEventListener("wheel", event => {
-  event.preventDefault();
-  const bounds = graphSvg.getBoundingClientRect();
-  zoomGraph(event.deltaY < 0 ? 1.12 : .89, event.clientX - bounds.left, event.clientY - bounds.top);
-}, { passive: false });
-graphSvg.addEventListener("pointerdown", event => {
-  if (event.button !== 0) return;
+graphCanvas.addEventListener("wheel", event => { event.preventDefault(); zoomGraph(event.deltaY < 0 ? 1.12 : 0.89); }, { passive: false });
+graphCanvas.addEventListener("pointerdown", event => {
+  if (event.pointerType === "mouse" && event.button !== 0) return;
   clearGraphHover();
-  graphDrag = { x: event.clientX, y: event.clientY, originX: graphTransform.x, originY: graphTransform.y };
-  graphSvg.setPointerCapture(event.pointerId);
-  graphSvg.classList.add("dragging");
+  graphPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  graphDrag = graphPointers.size === 1 ? { x: event.clientX, y: event.clientY, lastX: event.clientX, lastY: event.clientY } : null;
+  graphCanvas.setPointerCapture(event.pointerId);
+  graphCanvas.classList.add("dragging");
 });
-graphSvg.addEventListener("pointermove", event => {
-  if (!graphDrag) {
-    showGraphHover(event.clientX, event.clientY);
+graphCanvas.addEventListener("pointermove", event => {
+  if (graphPointers.has(event.pointerId)) graphPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  if (graphPointers.size === 2) {
+    const [left, right] = [...graphPointers.values()];
+    const distance = Math.hypot(left.x - right.x, left.y - right.y);
+    if (graphPinchDistance) graphRenderer?.zoom(distance / graphPinchDistance);
+    graphPinchDistance = distance;
+    graphDrag = null;
     return;
   }
-  graphTransform.x = graphDrag.originX + event.clientX - graphDrag.x;
-  graphTransform.y = graphDrag.originY + event.clientY - graphDrag.y;
-  applyGraphTransform();
+  if (!graphDrag) { showGraphHover(event.clientX, event.clientY); return; }
+  graphRenderer?.rotate(event.clientX - graphDrag.lastX, event.clientY - graphDrag.lastY);
+  graphDrag.lastX = event.clientX;
+  graphDrag.lastY = event.clientY;
 });
-graphSvg.addEventListener("pointerup", event => {
+graphCanvas.addEventListener("pointerup", event => {
   const drag = graphDrag;
+  graphPointers.delete(event.pointerId);
+  if (graphPointers.size < 2) graphPinchDistance = 0;
   graphDrag = null;
-  graphSvg.releasePointerCapture(event.pointerId);
-  graphSvg.classList.remove("dragging");
+  graphCanvas.releasePointerCapture(event.pointerId);
+  graphCanvas.classList.remove("dragging");
   if (!drag || Math.hypot(event.clientX - drag.x, event.clientY - drag.y) > 4) return;
   const id = graphIdAtClientPoint(event.clientX, event.clientY, 24);
   if (id) selectGraphEvent(id);
 });
-graphSvg.addEventListener("pointercancel", () => {
-  graphDrag = null;
-  graphSvg.classList.remove("dragging");
-});
-graphSvg.addEventListener("pointerleave", () => { if (!graphDrag) clearGraphHover(); });
-graphSvg.addEventListener("dblclick", event => {
-  const id = graphIdAtClientPoint(event.clientX, event.clientY, 24);
-  if (id) openGraphTrace(id);
-});
-
-const scheduleGraphRefit = () => {
-  clearTimeout(graphResizeTimer);
-  graphResizeTimer = setTimeout(() => {
-    if (graph && !graphPanel.hidden) fitGraph();
-  }, 120);
-};
-if ("ResizeObserver" in globalThis) new ResizeObserver(scheduleGraphRefit).observe(graphSvg);
-else window.addEventListener("resize", scheduleGraphRefit);
+graphCanvas.addEventListener("pointercancel", event => { graphPointers.delete(event.pointerId); graphPinchDistance = 0; graphDrag = null; graphCanvas.classList.remove("dragging"); });
+graphCanvas.addEventListener("pointerleave", () => { if (!graphDrag) clearGraphHover(); });
+graphCanvas.addEventListener("dblclick", event => { const id = graphIdAtClientPoint(event.clientX, event.clientY, 24); if (id) openGraphTrace(id); });
 
 const parameters = new URLSearchParams(location.search);
 const graphMode = parameters.get("view") === "graph";
@@ -979,7 +824,4 @@ if (eventId) openTrace("event_id", eventId).catch(showError);
 else if (correlationId) openTrace("correlation_id", correlationId).catch(showError);
 else openLatest().catch(showError);
 if (graphMode) setView("graph");
-window.addEventListener("beforeunload", () => {
-  closeGraphStream();
-  clearLiveState();
-});
+window.addEventListener("beforeunload", () => { closeGraphStream(); graphRenderer?.dispose(); });
