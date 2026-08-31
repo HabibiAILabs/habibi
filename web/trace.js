@@ -390,6 +390,7 @@ function showGraphFatal(message) {
 
 function shutdownGraph(error) {
   graphRendererError = error;
+  document.documentElement.classList.add("graph-unavailable");
   cancelGraphRequest();
   closeGraphStream();
   clearTimeout(graphLiveExpiryTimer);
