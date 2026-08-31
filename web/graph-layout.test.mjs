@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createRequestGate, fitTransform, layoutEvents, MIN_INTERACTIVE_SCALE, nearestNode, trimLine } from "./graph-layout.mjs";
+import { compensateAnchor, createLiveBatch, createRequestGate, expireLiveIds, fitTransform, intersectEventIds, layoutEvents, MIN_INTERACTIVE_SCALE, nearestNode, pruneLiveIds, trimLine } from "./graph-layout.mjs";
 
 const gate = createRequestGate();
 const first = gate.next();
@@ -8,6 +8,42 @@ assert.equal(gate.isCurrent(first), false, "an older graph request must become s
 assert.equal(gate.isCurrent(second), true);
 gate.invalidate();
 assert.equal(gate.isCurrent(second), false, "leaving the graph invalidates the active request");
+
+let scheduled = null;
+let flushes = [];
+const liveBatch = createLiveBatch(
+  values => flushes.push(values),
+  300,
+  callback => { scheduled = callback; return 1; },
+  () => { scheduled = null; },
+);
+liveBatch.add("event-1");
+liveBatch.add("event-1");
+liveBatch.add("event-2");
+assert.equal(flushes.length, 0, "live events must batch before refreshing");
+scheduled();
+assert.deepEqual(flushes, [["event-1", "event-2"]], "a live batch must deduplicate event IDs");
+liveBatch.add("event-3");
+liveBatch.clear();
+assert.equal(scheduled, null, "closing live mode must cancel its pending refresh");
+
+const liveExpirations = new Map([["expired", 10], ["current", 20]]);
+assert.deepEqual(expireLiveIds(liveExpirations, 10), ["expired"]);
+assert.deepEqual([...liveExpirations], [["current", 20]], "live expiry state must remain bounded");
+assert.deepEqual(
+  intersectEventIds(["missing", "current", "current"], [{ id: "current" }]),
+  ["current"],
+  "live IDs must be deduplicated and limited to returned events",
+);
+const rollingLive = new Map(Array.from({ length: 2000 }, (_, index) => [`event-${index}`, 100]));
+const rollingWindow = Array.from({ length: 1000 }, (_, index) => ({ id: `event-${index + 1000}` }));
+assert.equal(pruneLiveIds(rollingLive, rollingWindow).length, 1000);
+assert.equal(rollingLive.size, 1000, "live state must remain bounded by the visible graph window");
+assert.deepEqual(
+  compensateAnchor({ x: 10, y: 20, scale: 0.5 }, { x: 100, y: 80 }, { x: 68, y: 96 }),
+  { x: 26, y: 12, scale: 0.5 },
+  "relayout must retain the anchor's previous screen position",
+);
 
 const events = Array.from({ length: 1000 }, (_, index) => ({
   id: `event-${index}`,
@@ -44,4 +80,4 @@ assert.equal(nearestNode(overlappingTargets, { x: 0.5, y: 0 }, 10), "first");
 assert.equal(nearestNode(overlappingTargets, { x: 3.5, y: 0 }, 10), "second");
 assert.equal(nearestNode(overlappingTargets, { x: 30, y: 0 }, 10), null);
 
-console.log("graph layout: request gating, 1,000-node spacing, fit scale, and edge trimming passed");
+console.log("graph layout: request gating, bounded live expiry, anchor compensation, 1,000-node spacing, fit scale, nearest-node selection, and edge trimming passed");

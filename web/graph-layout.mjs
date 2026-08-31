@@ -17,6 +17,62 @@ export function createRequestGate() {
   };
 }
 
+export function createLiveBatch(flush, delay = 300, schedule = setTimeout, cancel = clearTimeout) {
+  const pending = new Set();
+  let timer = null;
+  return {
+    add(value) {
+      pending.add(value);
+      if (timer !== null) return;
+      timer = schedule(() => {
+        timer = null;
+        const values = [...pending];
+        pending.clear();
+        flush(values);
+      }, delay);
+    },
+    clear() {
+      if (timer !== null) cancel(timer);
+      timer = null;
+      pending.clear();
+    },
+  };
+}
+
+export function expireLiveIds(expirations, now) {
+  const expired = [];
+  for (const [id, expiresAt] of expirations) {
+    if (expiresAt > now) continue;
+    expirations.delete(id);
+    expired.push(id);
+  }
+  return expired;
+}
+
+export function pruneLiveIds(expirations, events) {
+  const visible = new Set(events.map(event => event.id));
+  const removed = [];
+  for (const id of expirations.keys()) {
+    if (visible.has(id)) continue;
+    expirations.delete(id);
+    removed.push(id);
+  }
+  return removed;
+}
+
+export function compensateAnchor(transform, previousPosition, nextPosition) {
+  return {
+    ...transform,
+    x: transform.x + (previousPosition.x - nextPosition.x) * transform.scale,
+    y: transform.y + (previousPosition.y - nextPosition.y) * transform.scale,
+  };
+}
+
+export function intersectEventIds(ids, events) {
+  const returned = new Set(events.map(event => event.id));
+  return [...new Set(ids)].filter(id => returned.has(id));
+}
+
 export function layoutEvents(events) {
   const ordered = [...events].sort((left, right) => left.sequence - right.sequence);
   const correlations = [...new Set(ordered.map(event => event.correlation_id))];

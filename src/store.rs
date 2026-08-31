@@ -22,6 +22,7 @@ pub struct InboxItem {
 #[derive(Debug, Clone, Default)]
 pub struct EventTailQuery {
     pub event_types: Vec<String>,
+    pub event_type: Option<String>,
     pub event_type_prefix: Option<String>,
     pub correlation_id: Option<Uuid>,
     pub after_sequence: i64,
@@ -868,15 +869,17 @@ impl EventStore {
              FROM events
              WHERE sequence > ?1
                AND (?2 IS NULL OR event_type IN (SELECT value FROM json_each(?2)))
-               AND (?3 IS NULL OR substr(event_type, 1, length(?3)) = ?3)
-               AND (?4 IS NULL OR correlation_id = ?4)
-             ORDER BY sequence ASC LIMIT ?5",
+               AND (?3 IS NULL OR event_type = ?3)
+               AND (?4 IS NULL OR substr(event_type, 1, length(?4)) = ?4)
+               AND (?5 IS NULL OR correlation_id = ?5)
+             ORDER BY sequence ASC LIMIT ?6",
         )?;
         statement
             .query_map(
                 params![
                     query.after_sequence,
                     exact_types,
+                    query.event_type,
                     query.event_type_prefix,
                     query.correlation_id.map(|id| id.to_string()),
                     query.limit.clamp(1, 500) as i64,
@@ -2232,6 +2235,7 @@ mod tests {
         let events = store
             .query_event_tail(&EventTailQuery {
                 event_types: vec!["chat.one".into(), "chat.two".into()],
+                event_type: None,
                 event_type_prefix: Some("chat.".into()),
                 correlation_id: Some(correlation),
                 after_sequence: 0,
@@ -2245,6 +2249,26 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![1, 4]
         );
+
+        store
+            .append(&Event::new(
+                "chat,comma",
+                "test",
+                correlation,
+                None,
+                json!({}),
+            ))
+            .unwrap();
+        let comma = store
+            .query_event_tail(&EventTailQuery {
+                event_type: Some("chat,comma".into()),
+                after_sequence: 0,
+                limit: 10,
+                ..EventTailQuery::default()
+            })
+            .unwrap();
+        assert_eq!(comma.len(), 1);
+        assert_eq!(comma[0].event.event_type, "chat,comma");
     }
 
     #[test]

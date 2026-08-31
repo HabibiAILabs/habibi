@@ -154,8 +154,7 @@ startup requeues interrupted claims. Context and tool-suggestion hooks run anew 
 claimed event. Model requests/responses and execution diagnostics remain logs and never enter the inbox.
 
 `GET /api/events/stream` tails committed events as SSE (`event: habibi.event`, sequence IDs). Its
-comma-separated `type` values are exact matches; `prefix`, `correlation_id`, and `after_sequence`
-are also supported. Without a cursor it starts at the current high-water mark and immediately emits
+comma-separated `type` values are exact matches; singular `exact_type` preserves literal commas in one event type. `prefix`, `correlation_id`, and `after_sequence` are also supported. Without a cursor it starts at the current high-water mark and immediately emits
 a `habibi.cursor` control frame carrying that anchor. `Last-Event-ID` overrides the initial query
 cursor on reconnect. Polling uses bounded pages and idle heartbeats, and clients must de-duplicate
 sequence IDs for at-least-once delivery.
@@ -185,8 +184,10 @@ and each compiled context. Its Relationships view uses `GET /api/event-graph` to
 filterable graph of durable causation and semantic links. Correlation is a selectable highlight, never
 a fabricated edge. The graph defaults to the newest 250 events, accepts exact event type, source, and
 correlation filters, caps nodes at 1,000 and semantic links at 2,000, and marks causal parents outside
-the visible window. A `truncated` flag identifies trace chains beyond the 1,000-event or 2,000-log
-view bounds.
+the visible window. The response includes a global event high-water `cursor` so filtered live views do
+not replay unrelated history. While open it batches SSE updates into live node arrivals without resetting
+pan or zoom; hover reveals immediate neighbors, and double-clicking a node opens its causal trace. A
+`truncated` flag identifies trace chains beyond the 1,000-event or 2,000-log view bounds.
 `GET /api/stats` and `/stats` aggregate model usage globally and by model, plus tool advertisements,
 distinct dispatches, calls, outcomes, schema-token estimates, and execution duration. Pricing comes from
 `model-catalog.json`, selected by provider and model ID. The Stats page can refresh the catalog from

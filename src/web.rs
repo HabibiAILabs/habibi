@@ -29,7 +29,7 @@ use crate::{
     extension::{ExtensionManager, RequestData, RouteOutcome},
     filesystem::normalize_grant_roots,
     installer::ExtensionInstaller,
-    store::{EventTailQuery, SharedEventStore, StoreEventQuery, StoreLogQuery},
+    store::{EventStore, EventTailQuery, SharedEventStore, StoreEventQuery, StoreLogQuery},
     studio::{
         CreateDraftDirectoryRequest, CreateDraftRequest, DraftFileRequest, StudioService,
         WriteDraftFileRequest,
@@ -258,26 +258,7 @@ async fn event_graph(
             .store
             .lock()
             .map_err(|_| anyhow::anyhow!("event store lock poisoned"))?;
-        let mut events = locked.query_events(&event_query)?;
-        let events_truncated = events.len() > limit;
-        if events_truncated {
-            events.remove(0);
-        }
-        let event_ids = events
-            .iter()
-            .map(|stored| stored.event.id)
-            .collect::<Vec<_>>();
-        let mut links = locked.event_links_for_events(&event_ids, 2_001)?;
-        let links_truncated = links.len() > 2_000;
-        if links_truncated {
-            links.pop();
-        }
-        Ok(build_event_graph_response(
-            events,
-            links,
-            events_truncated,
-            links_truncated,
-        ))
+        query_event_graph(&locked, &event_query, limit)
     })();
     match result {
         Ok(graph) => json_response(StatusCode::OK, graph),
@@ -307,17 +288,48 @@ fn build_event_graph_query(query: EventGraphQuery) -> anyhow::Result<(StoreEvent
     ))
 }
 
+fn query_event_graph(
+    store: &EventStore,
+    event_query: &StoreEventQuery,
+    limit: usize,
+) -> anyhow::Result<Value> {
+    let cursor = store.latest_event_sequence()?;
+    let mut events = store.query_events(event_query)?;
+    let events_truncated = events.len() > limit;
+    if events_truncated {
+        events.remove(0);
+    }
+    let event_ids = events
+        .iter()
+        .map(|stored| stored.event.id)
+        .collect::<Vec<_>>();
+    let mut links = store.event_links_for_events(&event_ids, 2_001)?;
+    let links_truncated = links.len() > 2_000;
+    if links_truncated {
+        links.pop();
+    }
+    Ok(build_event_graph_response(
+        events,
+        links,
+        events_truncated,
+        links_truncated,
+        cursor,
+    ))
+}
+
 fn build_event_graph_response(
     events: Vec<crate::event::StoredEvent>,
     links: Vec<Value>,
     events_truncated: bool,
     links_truncated: bool,
+    cursor: i64,
 ) -> Value {
     json!({
         "events": events,
         "links": links,
         "events_truncated": events_truncated,
         "links_truncated": links_truncated,
+        "cursor": cursor,
     })
 }
 
@@ -325,6 +337,7 @@ fn build_event_graph_response(
 struct EventStreamQuery {
     #[serde(rename = "type")]
     event_types: Option<String>,
+    exact_type: Option<String>,
     prefix: Option<String>,
     correlation_id: Option<String>,
     after_sequence: Option<String>,
@@ -354,6 +367,15 @@ fn parse_stream_event_types(value: Option<&str>) -> anyhow::Result<Vec<String>> 
         "type must contain an exact event type"
     );
     Ok(types)
+}
+
+fn parse_stream_exact_type(value: Option<&str>) -> anyhow::Result<Option<String>> {
+    let exact_type = value.filter(|event_type| !event_type.is_empty());
+    anyhow::ensure!(
+        value.is_none() || exact_type.is_some(),
+        "exact_type must contain one exact event type"
+    );
+    Ok(exact_type.map(str::to_owned))
 }
 
 fn parse_stream_cursor(
@@ -394,6 +416,7 @@ async fn stream_events(
 ) -> Response {
     let parsed = (|| -> anyhow::Result<EventStreamState> {
         let event_types = parse_stream_event_types(query.event_types.as_deref())?;
+        let exact_type = parse_stream_exact_type(query.exact_type.as_deref())?;
         let correlation_id = query
             .correlation_id
             .as_deref()
@@ -413,6 +436,7 @@ async fn stream_events(
             store: state.store.clone(),
             query: EventTailQuery {
                 event_types,
+                event_type: exact_type,
                 event_type_prefix: query.prefix,
                 correlation_id,
                 after_sequence,
@@ -1607,6 +1631,56 @@ mod tests {
     }
 
     #[test]
+    fn event_graph_cursor_is_global_when_filters_are_old_or_empty() {
+        let store = EventStore::open(":memory:").unwrap();
+        let correlation = Uuid::now_v7();
+        store
+            .append(&Event::new(
+                "old,type",
+                "wanted",
+                correlation,
+                None,
+                json!({}),
+            ))
+            .unwrap();
+        store
+            .append(&Event::new(
+                "new.type",
+                "other",
+                Uuid::now_v7(),
+                None,
+                json!({}),
+            ))
+            .unwrap();
+
+        let old = query_event_graph(
+            &store,
+            &StoreEventQuery {
+                source: Some("wanted".into()),
+                limit: 11,
+                ..StoreEventQuery::default()
+            },
+            10,
+        )
+        .unwrap();
+        assert_eq!(old["events"][0]["sequence"], 1);
+        assert_eq!(old["cursor"], 2);
+
+        let empty = query_event_graph(
+            &store,
+            &StoreEventQuery {
+                source: Some("missing".into()),
+                limit: 11,
+                ..StoreEventQuery::default()
+            },
+            10,
+        )
+        .unwrap();
+        assert_eq!(empty["events"], json!([]));
+        assert_eq!(empty["cursor"], 2);
+    }
+
+    #[test]
     fn event_graph_preserves_event_relationship_facts_and_bounds() {
         let correlation = Uuid::now_v7();
         let root = Event::new("test.root", "test", correlation, None, json!({}));
@@ -1631,12 +1705,14 @@ mod tests {
             })],
             true,
             false,
+            99,
         );
         assert_eq!(response["events"][1]["causation_id"], json!(root.id));
         assert_eq!(response["events"][1]["correlation_id"], json!(correlation));
         assert_eq!(response["links"][0]["relation"], "supports");
         assert_eq!(response["events_truncated"], true);
         assert_eq!(response["links_truncated"], false);
+        assert_eq!(response["cursor"], 99);
     }
 
     #[test]
@@ -1691,6 +1767,13 @@ mod sse_tests {
             vec!["chat.one", "chat.two"]
         );
         assert!(parse_stream_event_types(Some(" , ")).is_err());
+        assert_eq!(
+            parse_stream_exact_type(Some("chat,comma"))
+                .unwrap()
+                .as_deref(),
+            Some("chat,comma")
+        );
+        assert!(parse_stream_exact_type(Some("")).is_err());
     }
 
     #[test]
