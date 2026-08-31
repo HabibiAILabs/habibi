@@ -120,7 +120,7 @@ pub fn router(state: WebState) -> Router {
 }
 
 async fn home_page() -> Response {
-    html_response(include_str!("../web/home.html"))
+    html_response(include_str!("../web/trace.html"))
 }
 
 async fn extensions_page() -> Response {

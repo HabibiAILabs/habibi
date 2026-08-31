@@ -354,9 +354,11 @@ function setView(view, { load = true } = {}) {
   timelineTab.tabIndex = graphActive ? -1 : 0;
   graphTab.tabIndex = graphActive ? 0 : -1;
   if (!graphFailure.error) graphRenderer?.setActive(graphActive);
-  const parameters = new URLSearchParams(location.search);
-  if (graphActive) parameters.set("view", "graph"); else parameters.delete("view");
-  history.replaceState(null, "", `/trace?${parameters}`);
+  if (!homepageMode) {
+    const parameters = new URLSearchParams(location.search);
+    if (graphActive) parameters.set("view", "graph"); else parameters.delete("view");
+    history.replaceState(null, "", `/trace?${parameters}`);
+  }
   if (graphActive && load && !graphFailure.error) openGraph().catch(handleGraphError);
   else if (!graphActive) {
     cancelGraphRequest();
@@ -526,13 +528,15 @@ async function openGraph({ liveIds = [], activeFilters = null } = {}) {
     graphFilters = filters;
     result.events.forEach(event => knownGraphTypes.add(event.event_type));
     renderGraphFilterUi(filters);
-    const parameters = new URLSearchParams(location.search);
-    for (const name of ["graph_type", "graph_source", "graph_correlation", "graph_limit"]) parameters.delete(name);
-    if (filters.eventType) parameters.set("graph_type", filters.eventType);
-    if (filters.source) parameters.set("graph_source", filters.source);
-    if (filters.correlation) parameters.set("graph_correlation", filters.correlation);
-    parameters.set("graph_limit", filters.limit);
-    history.replaceState(null, "", `/trace?${parameters}`);
+    if (!homepageMode) {
+      const parameters = new URLSearchParams(location.search);
+      for (const name of ["graph_type", "graph_source", "graph_correlation", "graph_limit"]) parameters.delete(name);
+      if (filters.eventType) parameters.set("graph_type", filters.eventType);
+      if (filters.source) parameters.set("graph_source", filters.source);
+      if (filters.correlation) parameters.set("graph_correlation", filters.correlation);
+      parameters.set("graph_limit", filters.limit);
+      history.replaceState(null, "", `/trace?${parameters}`);
+    }
     if (!graph.events.some(event => event.id === selectedGraphId)) selectedGraphId = null;
     pruneLiveIds(recentLiveIds, result.events);
     intersectEventIds(liveIds, result.events).forEach(id => recentLiveIds.set(id, Date.now() + 6000));
@@ -663,6 +667,10 @@ function renderGraphInspector(event) {
 }
 
 function openGraphTrace(id) {
+  if (homepageMode) {
+    location.assign(`/trace?event_id=${encodeURIComponent(id)}`);
+    return;
+  }
   setView("timeline", { load: false });
   openTrace("event_id", id).catch(showError);
 }
@@ -812,7 +820,8 @@ graphCanvas.addEventListener("pointerleave", () => { if (!graphDrag) clearGraphH
 graphCanvas.addEventListener("dblclick", event => { const id = graphIdAtClientPoint(event.clientX, event.clientY, 24); if (id) openGraphTrace(id); });
 
 const parameters = new URLSearchParams(location.search);
-const graphMode = parameters.get("view") === "graph";
+const homepageMode = location.pathname === "/";
+const graphMode = homepageMode || parameters.get("view") === "graph";
 graphType.value = parameters.get("graph_type") || "";
 graphSource.value = parameters.get("graph_source") || "";
 graphCorrelation.value = parameters.get("graph_correlation") || "";
@@ -820,8 +829,10 @@ if (["100", "250", "500", "1000"].includes(parameters.get("graph_limit"))) graph
 if (graphType.value || graphSource.value || graphCorrelation.value || parameters.has("graph_limit")) graphFilterPanel.open = true;
 const eventId = parameters.get("event_id");
 const correlationId = parameters.get("correlation_id");
-if (eventId) openTrace("event_id", eventId).catch(showError);
-else if (correlationId) openTrace("correlation_id", correlationId).catch(showError);
-else openLatest().catch(showError);
+if (!homepageMode) {
+  if (eventId) openTrace("event_id", eventId).catch(showError);
+  else if (correlationId) openTrace("correlation_id", correlationId).catch(showError);
+  else openLatest().catch(showError);
+}
 if (graphMode) setView("graph");
 window.addEventListener("beforeunload", () => { closeGraphStream(); graphRenderer?.dispose(); });

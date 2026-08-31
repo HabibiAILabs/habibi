@@ -203,6 +203,15 @@ pre { max-height: 520px; overflow: auto; border-radius: 10px; padding: 14px; bac
 .graph-mode .trace-shell { max-width: none; padding-top: 18px; }
 .graph-mode .trace-heading, .graph-mode #trace-search, .graph-mode #trace-status, .graph-mode #trace-summary, .graph-mode .trace-map-keys { display: none !important; }
 .graph-mode .trace-workspace { grid-template-columns: minmax(0, 1fr) minmax(320px, 390px); }
+.graph-home body { min-height: 100dvh; overflow: hidden; }
+.graph-home .topbar, .graph-home .trace-heading, .graph-home #trace-search, .graph-home #trace-status, .graph-home #trace-summary, .graph-home .trace-map-heading, .graph-home .graph-filter-panel, .graph-home .graph-toolbar, .graph-home .graph-legend, .graph-home .graph-status, .graph-home .trace-inspector { display: none !important; }
+.graph-home .trace-shell { width: 100%; margin: 0; padding: 0; }
+.graph-home .trace-workspace { display: block; }
+.graph-home .trace-map-panel { min-height: 100dvh; border: 0; border-radius: 0; }
+.graph-home .event-graph { padding: 0; }
+.graph-home .graph-stage { min-height: 100dvh; border: 0; border-radius: 0; }
+.graph-home #memory-graph-canvas { height: 100dvh; }
+.graph-home .graph-event-index { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .graph-filter-panel { margin-bottom: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); }
 .graph-filter-panel > summary { display: flex; justify-content: space-between; gap: 12px; padding: 8px 10px; cursor: pointer; color: var(--text); font-size: 11px; }
 .graph-filter-panel > summary span { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
