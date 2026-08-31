@@ -30,7 +30,7 @@ Habibi's core provides:
 - An append-only SQLite event store
 - Native OpenAI ChatGPT/Codex OAuth and local Ollama model transports
 - A durable SQLite model inbox with one serial background engine worker
-- A searchable, event-scoped tool registry with measured suggestions, advertisements, calls, and outcomes
+- A local semantic tool index with measured selection, advertisements, calls, and outcomes
 - A local Axum web server
 - Capability-scoped Lua extensions
 - Namespaced web routes and JSON KV storage for extensions
@@ -95,9 +95,14 @@ whose Ollama metadata declares tool support.
 
 ## Run
 
+Install the pinned local embedding model once. The command verifies exact file sizes and SHA-256 digests; ordinary startup never downloads models.
+
 ```sh
+mise exec -- cargo run -- embeddings install
 mise exec -- cargo run
 ```
+
+Habibi uses quantized BGE Small English v1.5 through local CPU ONNX inference. The verified model is cached under `$XDG_CACHE_HOME/habibi/embeddings` (or `~/.cache/habibi/embeddings`). Set `HABIBI_EMBEDDING_DIR` to use an existing verified model directory.
 
 Then open `http://127.0.0.1:8787`. The home page presents Habibi itself; extension discovery
 and enable/disable controls live at `/extensions`. The interactive causal view is at `/trace`;
@@ -150,7 +155,7 @@ to 100 events and supports `limit` (up to 1,000), `type`, `prefix`, `source`, `c
 
 Event-producing routes transactionally append an event and a durable inbox item, return `202 Accepted`,
 and never wait for model completion. One background engine claims inbox items in sequence order;
-startup requeues interrupted claims. Context and tool-suggestion hooks run anew for each immutable
+startup requeues interrupted claims. Context hooks and semantic tool selection run anew for each immutable
 claimed event. Model requests/responses and execution diagnostics remain logs and never enter the inbox.
 
 `GET /api/events/stream` tails committed events as SSE (`event: habibi.event`, sequence IDs). Its
@@ -194,10 +199,7 @@ Every completed invocation stores its exact catalog entry and rates, so later re
 rewrite historical estimates. See [`docs/model-catalog.md`](docs/model-catalog.md) for the format
 and refresh semantics.
 
-The always-advertised `habibi.tools.search` tool discovers matching built-in and extension tools.
-Built-in tools can get/query events or logs, create semantic links between events, and traverse
-those links. The chat extension suggests only its event-relevant reply tool; other chat tools remain
-searchable through the registry.
+For each event, Habibi embeds a bounded event/context projection and selects semantically matching registered tools. Tools actually called earlier in the correlation have priority; semantic matches fill a final surface of at most 50 exact-name-deduplicated tools. `habibi.tools.search` is an ordinary indexed tool and uses the same semantic index when selected. Built-in tools can get/query events or logs, create semantic links between events, and traverse those links. Exact embedding model identity, query hash, scores, ranks, reasons, limits, schema size, and catalog generation remain in `tool.surface.prepared` logs.
 
 ## Chat API
 

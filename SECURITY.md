@@ -66,6 +66,10 @@ untrusted input that may contain prompt injection, falsehoods, or copyrighted te
 not fetch pages. Never search credentials, private source, or personal data unless disclosure to the
 configured provider is intended.
 
+## Local embedding model
+
+Habibi never downloads an embedding model during ordinary startup. `habibi embeddings install` is the only model download path. It uses an immutable repository revision, bounds each file by its pinned size, verifies SHA-256 before installation, and atomically installs the complete model directory. Startup verifies every model file again before local ONNX inference. Model identity, artifact metadata, and licenses are checked into `models/`; model binaries are not stored in Git or embedded in the Habibi executable.
+
 ## Reporting vulnerabilities
 
 Please use GitHub private vulnerability reporting for the affected repository when available. Do not include access tokens, OAuth credentials, private event data, or database contents in a public issue.

@@ -6,5 +6,7 @@
 *.db
 *.db-shm
 *.db-wal
+/models/*.onnx
+/.fastembed_cache/
 __pycache__/
 *.pyc

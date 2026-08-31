@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::HashSet,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -10,6 +10,7 @@ use std::{
 use anyhow::{Context, Result};
 use futures::{StreamExt, stream::FuturesUnordered};
 use serde_json::{Value, json};
+use sha2::Digest;
 use uuid::Uuid;
 
 use crate::{
@@ -228,54 +229,6 @@ impl Engine {
         }
         let context_preparation_duration_ms = context_started.elapsed().as_millis();
 
-        let mut suggestions = BTreeMap::new();
-        for execution in self.tools.tool_suggestion_hooks(current_event)? {
-            for suggestion in &execution.suggestions {
-                suggestions
-                    .entry(suggestion.tool.clone())
-                    .or_insert_with(|| ToolCandidateOrigin::ExtensionSuggestion {
-                        extension: execution.extension_id.clone(),
-                        hook: execution.hook.clone(),
-                        reason: suggestion.reason.clone(),
-                    });
-            }
-            self.log(LogEntry::new(
-                if execution.error.is_some() {
-                    "warn"
-                } else {
-                    "debug"
-                },
-                "tool",
-                if execution.error.is_some() {
-                    "tool.suggestion_hook.failed"
-                } else {
-                    "tool.suggestion_hook.completed"
-                },
-                dispatch_id,
-                Some(current_event.id),
-                current_event.correlation_id,
-                json!({ "extension": execution.extension_id, "hook": execution.hook,
-                    "duration_ms": execution.duration_ms, "suggestions": execution.suggestions,
-                    "error": execution.error }),
-            ))?;
-        }
-        let mut tool_chain = ToolChainState::new(suggestions);
-        tool_chain.observe_event(current_event);
-        if current_event.event_type == "actions.completed"
-            && let Some(result_ids) = current_event
-                .payload
-                .get("batched_result_event_ids")
-                .and_then(Value::as_array)
-        {
-            for result_id in result_ids.iter().filter_map(Value::as_str) {
-                if let Some(result) =
-                    self.with_store(|store| store.get_event(Some(result_id), None))?
-                {
-                    tool_chain.observe_event(&result.event);
-                }
-            }
-        }
-
         if let Some((state, completed)) =
             self.with_store(|store| store.action_group(current_event.id))?
         {
@@ -313,6 +266,7 @@ impl Engine {
         }
 
         let rendering_started = Instant::now();
+        let retrieval_context = extension_input.clone();
         let mut input = extension_input;
         input.push(current_event_input(&self.store, current_event)?);
         let input_bytes = serde_json::to_vec(&input)?.len();
@@ -335,7 +289,66 @@ impl Engine {
         self.log(context_log)?;
 
         let surface_started = Instant::now();
-        let surface = tool_chain.prepare_surface(&catalog)?;
+        let selection = match self
+            .tools
+            .select_tools(catalog.clone(), current_event, &retrieval_context)
+            .await
+        {
+            Ok(selection) => selection,
+            Err(error) => {
+                let query = crate::embedding::event_tool_query(current_event, &retrieval_context);
+                self.log(LogEntry::new(
+                    "error",
+                    "tool",
+                    "tool.surface.failed",
+                    dispatch_id,
+                    Some(current_event.id),
+                    current_event.correlation_id,
+                    json!({
+                        "current_event_id": current_event.id,
+                        "catalog_generation": catalog.generation,
+                        "embedding_model": self.tools.embedding_model(),
+                        "embedding_revision": self.tools.embedding_revision(),
+                        "query_text_sha256": format!("{:x}", sha2::Sha256::digest(query.as_bytes())),
+                        "minimum_similarity": crate::embedding::MIN_TOOL_SIMILARITY,
+                        "semantic_limit": crate::embedding::SEMANTIC_TOOL_LIMIT,
+                        "used_limit": crate::embedding::USED_TOOL_LIMIT,
+                        "final_limit": crate::embedding::FINAL_TOOL_LIMIT,
+                        "duration_ms": surface_started.elapsed().as_millis(),
+                        "error": error.to_string(),
+                    }),
+                ))?;
+                return Err(error);
+            }
+        };
+        let surface_definitions = selection
+            .records
+            .iter()
+            .map(|record| {
+                catalog
+                    .definition(&record.tool)
+                    .map(with_delivery_schema)
+                    .with_context(|| format!("selected tool '{}' is not registered", record.tool))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let advertised_schema_bytes = serde_json::to_vec(&surface_definitions)?.len();
+        let surface_records = selection
+            .records
+            .iter()
+            .zip(&surface_definitions)
+            .map(|(record, definition)| {
+                let schema_bytes = serde_json::to_vec(definition).map(|value| value.len())?;
+                Ok(json!({
+                    "tool": record.tool,
+                    "score": record.score,
+                    "rank": record.rank,
+                    "reason": record.reason,
+                    "decision": "advertised",
+                    "schema_bytes": schema_bytes,
+                    "estimated_schema_tokens": schema_bytes.div_ceil(4),
+                }))
+            })
+            .collect::<Result<Vec<_>>>()?;
         let surface_log = LogEntry::new(
             "debug",
             "tool",
@@ -344,18 +357,26 @@ impl Engine {
             Some(current_event.id),
             current_event.correlation_id,
             json!({
-                "current_event_id": current_event.id, "catalog_generation": catalog.generation,
+                "current_event_id": current_event.id,
+                "catalog_generation": catalog.generation,
                 "duration_ms": surface_started.elapsed().as_millis(),
-                "advertised": surface.definitions.len(), "advertised_schema_bytes": surface.advertised_schema_bytes,
-                "estimated_advertised_schema_tokens": surface.advertised_schema_bytes.div_ceil(4),
-                "tools": surface.records,
+                "advertised": surface_definitions.len(),
+                "advertised_schema_bytes": advertised_schema_bytes,
+                "estimated_advertised_schema_tokens": advertised_schema_bytes.div_ceil(4),
+                "embedding_model": self.tools.embedding_model(),
+                "embedding_revision": self.tools.embedding_revision(),
+                "query_text_sha256": selection.query_sha256,
+                "minimum_similarity": crate::embedding::MIN_TOOL_SIMILARITY,
+                "semantic_limit": crate::embedding::SEMANTIC_TOOL_LIMIT,
+                "used_limit": crate::embedding::USED_TOOL_LIMIT,
+                "final_limit": crate::embedding::FINAL_TOOL_LIMIT,
+                "tools": surface_records,
             }),
         );
         let surface_log_id = surface_log.id;
         self.log(surface_log)?;
 
-        let advertised_tool_names = surface
-            .definitions
+        let advertised_tool_names = surface_definitions
             .iter()
             .map(|tool| tool.name.clone())
             .collect::<Vec<_>>();
@@ -403,7 +424,7 @@ impl Engine {
             (0, Vec::new())
         };
         loop {
-            let request = self.model.request_body(&input, &surface.definitions);
+            let request = self.model.request_body(&input, &surface_definitions);
             let model_span_id = Uuid::now_v7().to_string();
             let mut started_log = LogEntry::new(
                 "info",
@@ -453,7 +474,7 @@ impl Engine {
                     return Err(error);
                 }
             };
-            let name_errors = normalize_call_names(&mut response.tool_calls, &surface.definitions);
+            let name_errors = normalize_call_names(&mut response.tool_calls, &surface_definitions);
             let calls = plan_deliveries(response.tool_calls);
             let mut validation_errors = name_errors;
             validation_errors.extend(validate_calls(&calls, &catalog)?);
@@ -545,12 +566,6 @@ impl Engine {
                 continue;
             }
 
-            tool_chain.observe_calls(
-                &calls
-                    .iter()
-                    .map(|call| call.call.clone())
-                    .collect::<Vec<_>>(),
-            );
             let completed_log_id = completed_log.id;
             let outcome = DurableDispatchOutcome {
                 model_log_id: completed_log_id,
@@ -897,185 +912,6 @@ impl Engine {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(tag = "source", rename_all = "snake_case")]
-enum ToolCandidateOrigin {
-    Core,
-    ExtensionSuggestion {
-        extension: String,
-        hook: String,
-        reason: Option<String>,
-    },
-    ToolSearch {
-        result_event_id: Uuid,
-    },
-    UsedEarlier,
-}
-
-#[derive(Debug, Clone)]
-struct DiscoveredTool {
-    result_event_id: Uuid,
-    advertised: bool,
-    pruned_recorded: bool,
-}
-
-#[derive(Debug, Default, serde::Serialize)]
-struct ToolUsage {
-    advertised: u64,
-    called: u64,
-    succeeded: u64,
-    failed: u64,
-    estimated_schema_tokens: u64,
-}
-
-struct ToolChainState {
-    suggestions: BTreeMap<String, ToolCandidateOrigin>,
-    discovered: BTreeMap<String, DiscoveredTool>,
-    used: HashSet<String>,
-    usage: BTreeMap<String, ToolUsage>,
-    invocation_index: u64,
-}
-
-#[derive(serde::Serialize)]
-struct ToolSurfaceRecord {
-    tool: String,
-    origin: ToolCandidateOrigin,
-    decision: String,
-    schema_bytes: usize,
-    estimated_schema_tokens: usize,
-}
-
-struct ToolSurface {
-    definitions: Vec<crate::tool::ToolDefinition>,
-    records: Vec<ToolSurfaceRecord>,
-    advertised_schema_bytes: usize,
-}
-
-impl ToolChainState {
-    fn new(suggestions: BTreeMap<String, ToolCandidateOrigin>) -> Self {
-        Self {
-            suggestions,
-            discovered: BTreeMap::new(),
-            used: HashSet::new(),
-            usage: BTreeMap::new(),
-            invocation_index: 0,
-        }
-    }
-
-    fn prepare_surface(&mut self, catalog: &ToolCatalog) -> Result<ToolSurface> {
-        self.invocation_index += 1;
-        let mut candidates =
-            BTreeMap::from([("habibi.tools.search".to_owned(), ToolCandidateOrigin::Core)]);
-        candidates.extend(self.suggestions.clone());
-        for tool in &self.used {
-            candidates
-                .entry(tool.clone())
-                .or_insert(ToolCandidateOrigin::UsedEarlier);
-        }
-        for (tool, discovery) in &self.discovered {
-            if !discovery.advertised || self.used.contains(tool) {
-                candidates.insert(
-                    tool.clone(),
-                    ToolCandidateOrigin::ToolSearch {
-                        result_event_id: discovery.result_event_id,
-                    },
-                );
-            }
-        }
-
-        let mut definitions = Vec::new();
-        let mut records = Vec::new();
-        let mut advertised_schema_bytes = 0;
-        for (name, origin) in candidates {
-            let definition = with_delivery_schema(
-                catalog
-                    .definition(&name)
-                    .with_context(|| format!("tool candidate '{name}' is not registered"))?,
-            );
-            let schema_bytes = serde_json::to_vec(&definition)?.len();
-            advertised_schema_bytes += schema_bytes;
-            let estimated_schema_tokens = schema_bytes.div_ceil(4);
-            let usage = self.usage.entry(name.clone()).or_default();
-            usage.advertised += 1;
-            usage.estimated_schema_tokens += estimated_schema_tokens as u64;
-            records.push(ToolSurfaceRecord {
-                tool: name,
-                origin,
-                decision: "advertised".into(),
-                schema_bytes,
-                estimated_schema_tokens,
-            });
-            definitions.push(definition);
-        }
-        for (name, discovery) in &mut self.discovered {
-            if !discovery.advertised {
-                discovery.advertised = true;
-            } else if !discovery.pruned_recorded
-                && !self.used.contains(name)
-                && !records.iter().any(|record| record.tool == *name)
-            {
-                discovery.pruned_recorded = true;
-                records.push(ToolSurfaceRecord {
-                    tool: name.clone(),
-                    origin: ToolCandidateOrigin::ToolSearch {
-                        result_event_id: discovery.result_event_id,
-                    },
-                    decision: "pruned_unused".into(),
-                    schema_bytes: 0,
-                    estimated_schema_tokens: 0,
-                });
-            }
-        }
-        Ok(ToolSurface {
-            definitions,
-            records,
-            advertised_schema_bytes,
-        })
-    }
-
-    fn observe_calls(&mut self, calls: &[ToolCall]) {
-        for call in calls {
-            self.used.insert(call.name.clone());
-            self.usage.entry(call.name.clone()).or_default().called += 1;
-        }
-    }
-
-    fn observe_event(&mut self, event: &Event) {
-        if let Some(tools) = event
-            .payload
-            .get("advertised_tool_names")
-            .and_then(Value::as_array)
-        {
-            for tool in tools.iter().filter_map(Value::as_str) {
-                self.used.insert(tool.to_owned());
-            }
-        }
-        let Some(tool) = event.payload.get("tool").and_then(Value::as_str) else {
-            return;
-        };
-        self.used.insert(tool.to_owned());
-        if tool == "habibi.tools.search"
-            && let Some(found) = event
-                .payload
-                .pointer("/result/tools")
-                .and_then(Value::as_array)
-        {
-            for tool in found {
-                if let Some(name) = tool.get("tool").and_then(Value::as_str) {
-                    self.discovered.insert(
-                        name.to_owned(),
-                        DiscoveredTool {
-                            result_event_id: event.id,
-                            advertised: false,
-                            pruned_recorded: false,
-                        },
-                    );
-                }
-            }
-        }
-    }
-}
-
 const MAX_TOOL_CALL_VALIDATION_RETRIES: usize = 3;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1369,7 +1205,12 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let store = EventStore::open(":memory:").unwrap().shared();
         let extensions = Arc::new(ExtensionManager::load(directory.path(), store.clone()).unwrap());
-        let runtime = ToolRuntime::new(store, extensions).unwrap();
+        let runtime = ToolRuntime::new(
+            store,
+            extensions,
+            Arc::new(crate::embedding::DeterministicTestEmbedder),
+        )
+        .unwrap();
         let catalog = runtime.catalog().unwrap();
         let invalid = PlannedCall {
             call: ToolCall {
@@ -1514,44 +1355,5 @@ mod tests {
         assert_eq!(prepared.events.len(), 1);
         assert_eq!(prepared.events[0].event_type, "workspace.file.written");
         assert_eq!(prepared.events[0].causation_id, Some(action_request_id));
-    }
-
-    #[test]
-    fn prunes_searched_but_unused_tools_after_one_advertisement() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = EventStore::open(":memory:").unwrap().shared();
-        let extensions = Arc::new(ExtensionManager::load(directory.path(), store.clone()).unwrap());
-        let runtime = ToolRuntime::new(store, extensions).unwrap();
-        let catalog = runtime.catalog().unwrap();
-        let mut chain = ToolChainState::new(BTreeMap::new());
-        chain.discovered.insert(
-            "habibi.events.get".into(),
-            DiscoveredTool {
-                result_event_id: Uuid::now_v7(),
-                advertised: false,
-                pruned_recorded: false,
-            },
-        );
-        let first = chain.prepare_surface(&catalog).unwrap();
-        assert!(
-            first
-                .definitions
-                .iter()
-                .any(|definition| definition.name == "habibi.events.get")
-        );
-        let second = chain.prepare_surface(&catalog).unwrap();
-        assert!(
-            !second
-                .definitions
-                .iter()
-                .any(|definition| definition.name == "habibi.events.get")
-        );
-        assert!(second.records.iter().any(|record| {
-            record.tool == "habibi.events.get" && record.decision == "pruned_unused"
-        }));
-        let third = chain.prepare_surface(&catalog).unwrap();
-        assert!(!third.records.iter().any(|record| {
-            record.tool == "habibi.events.get" && record.decision == "pruned_unused"
-        }));
     }
 }

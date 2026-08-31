@@ -1,8 +1,8 @@
 # Habibi extensions
 
 Extensions are versioned Lua packages installed beneath `HABIBI_EXTENSIONS_DIR`. Each extension
-has its own HTTP namespace and KV namespace. API version 2 provides typed context hooks and
-separate tool-suggestion hooks while remaining deliberately small and synchronous.
+has its own HTTP namespace and KV namespace. API version 2 provides typed context hooks
+while remaining deliberately small and synchronous.
 
 Install from a local package or Git repository:
 
@@ -55,10 +55,9 @@ static_dir = "web"
 
 Capabilities are optional and default to false. An extension receives only the corresponding
 host APIs. Lua runs without the `io`, `os`, `package`, or `debug` standard libraries. API version 2
-uses `habibi.context.register` and `habibi.tools.suggest` for per-event model context and tool discovery.
+uses `habibi.context.register` for per-event model context. Tool discovery is core-owned semantic retrieval over registered tool descriptions and input fields.
 
-Habibi also infers provided features from registered routes, static web content, context hooks,
-and tool suggestion hooks. These details appear at `/extensions`, where extensions can be enabled
+Habibi also infers provided features from registered routes, static web content, and context hooks. These details appear at `/extensions`, where extensions can be enabled
 or disabled.
 An extension with static web content receives an **Open** link to `/extensions/{id}/`. Installed
 extensions are fully trusted local code; capabilities make behavior visible during review and
@@ -127,22 +126,7 @@ do not enter individually; `actions.completed` exposes those results once, in or
 The completion event is always persisted and is enqueued only when batched results exist. Failed
 results use the selected delivery mode. Tools cannot suppress or terminate result delivery.
 
-Only `habibi.tools.search`, event-relevant extension suggestions, tools discovered in the current
-causal chain, and tools already used in that chain are advertised to a model invocation. Extensions
-can suggest their own tools separately from context creation:
-
-```lua
-habibi.tools.suggest("example-created", function(trigger)
-  if trigger.event_type ~= "example.item.created" then return habibi.array({}) end
-  return habibi.array({{
-    tool = "example.lookup",
-    reason = "New example items commonly need enrichment."
-  }})
-end)
-```
-
-Suggestions are discovery hints, not authorization. Dangerous tools must enforce confirmation and
-argument policy when executed. Tool definitions and handlers are pinned to one validated catalog
+For every claimed event, core semantically ranks registered tools from a bounded event/context projection. Tools actually called earlier in the correlation have priority, and semantic matches fill a final maximum of 50 tools. `habibi.tools.search` is indexed like any other tool and uses the same semantic index if selected. Dangerous tools must enforce confirmation and argument policy when executed. Tool definitions and handlers are pinned to one validated catalog
 generation for each action group. Tool advertisements, calls, outcomes, schema-token
 estimates, and execution durations are recorded in logs and aggregated at `/stats`.
 
@@ -263,7 +247,7 @@ redaction feature.
 ## Sandboxed process execution
 
 The Linux-only `process` capability exposes `habibi.process.run` only while a registered tool handler
-is executing. Initialization, routes, context hooks, and suggestion hooks cannot run processes. The
+is executing. Initialization, routes, and context hooks cannot run processes. The
 extension must have both an exact executable grant and a filesystem root containing the requested
 working directory.
 

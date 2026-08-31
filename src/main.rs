@@ -1,6 +1,7 @@
 mod auth;
 mod catalog;
 mod context;
+mod embedding;
 mod engine;
 mod event;
 mod extension;
@@ -21,6 +22,7 @@ use std::{path::PathBuf, sync::Arc};
 use anyhow::{Context, Result, bail};
 use auth::CredentialStore;
 use catalog::CatalogManager;
+use embedding::LocalEmbedder;
 use engine::Engine;
 use extension::ExtensionManager;
 use installer::{ExtensionInstaller, SourceOptions};
@@ -47,6 +49,16 @@ async fn main() -> Result<()> {
             .user_agent(concat!("habibi/", env!("CARGO_PKG_VERSION")))
             .build()?;
         CredentialStore::from_env()?.login_openai(&client).await?;
+        return Ok(());
+    }
+    if arguments.first().map(String::as_str) == Some("embeddings") {
+        if arguments.as_slice() != ["embeddings", "install"] {
+            bail!("usage: habibi embeddings install");
+        }
+        let path = tokio::task::spawn_blocking(embedding::install_default_model)
+            .await
+            .context("embedding model installer task failed")??;
+        println!("Installed pinned embedding model at {}", path.display());
         return Ok(());
     }
     let extensions_path = PathBuf::from(
@@ -82,7 +94,7 @@ async fn main() -> Result<()> {
     }
     if !arguments.is_empty() {
         bail!(
-            "unknown command '{}'; supported commands: login, install, update, rollback",
+            "unknown command '{}'; supported commands: login, embeddings, install, update, rollback",
             arguments[0]
         );
     }
@@ -101,7 +113,17 @@ async fn main() -> Result<()> {
     {
         bail!("extension drafts and installed extensions must use separate directories");
     }
-    let tools = Arc::new(ToolRuntime::new(store.clone(), extensions.clone())?);
+    let embedder = Arc::new(
+        tokio::task::spawn_blocking(LocalEmbedder::load_default)
+            .await
+            .context("embedding model initialization task failed")??,
+    );
+    let tools = Arc::new(ToolRuntime::new(
+        store.clone(),
+        extensions.clone(),
+        embedder,
+    )?);
+    tools.initialize_catalog().await?;
     let engine = Arc::new(Engine::new(store.clone(), model, tools));
     let engine_owner = engine.acquire_database_ownership()?;
     engine.record_runtime_started()?;

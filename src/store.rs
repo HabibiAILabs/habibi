@@ -13,6 +13,13 @@ use crate::event::{Event, LogEntry, StoredEvent, StoredLog};
 
 pub type SharedEventStore = Arc<Mutex<EventStore>>;
 
+#[derive(Debug, Clone)]
+pub struct StoredToolEmbedding {
+    pub tool_name: String,
+    pub retrieval_text_sha256: String,
+    pub vector: Vec<f32>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct InboxItem {
     pub event: StoredEvent,
@@ -151,7 +158,7 @@ pub struct EventStore {
     connection: Connection,
 }
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 impl EventStore {
     pub fn open(path: &str) -> Result<Self> {
@@ -171,7 +178,7 @@ impl EventStore {
         }
         if schema_version != 0 && schema_version != SCHEMA_VERSION {
             anyhow::bail!(
-                "unsupported database schema version {schema_version}; expected {SCHEMA_VERSION}"
+                "unsupported database schema version {schema_version}; expected {SCHEMA_VERSION}; configure HABIBI_DB to a new empty database (no migration or backfill is supported)"
             );
         }
         connection.execute_batch(
@@ -308,7 +315,18 @@ impl EventStore {
                  PRIMARY KEY (source, event_type, idempotency_key)
              );
 
-             PRAGMA user_version = 2;"
+             CREATE TABLE IF NOT EXISTS tool_embeddings (
+                 catalog_generation TEXT NOT NULL,
+                 tool_name TEXT NOT NULL,
+                 retrieval_text_sha256 TEXT NOT NULL,
+                 embedding_model TEXT NOT NULL,
+                 embedding_revision TEXT NOT NULL,
+                 dimensions INTEGER NOT NULL,
+                 vector BLOB NOT NULL,
+                 PRIMARY KEY (catalog_generation, tool_name)
+             );
+
+             PRAGMA user_version = 3;"
         )?;
 
         Ok(Self { connection })
@@ -1053,6 +1071,159 @@ impl EventStore {
             ],
         )?;
         Ok(())
+    }
+
+    pub fn load_tool_embeddings(
+        &self,
+        catalog_generation: &str,
+        embedding_model: &str,
+        embedding_revision: &str,
+        dimensions: usize,
+    ) -> Result<Vec<StoredToolEmbedding>> {
+        let mut statement = self.connection.prepare(
+            "SELECT tool_name, retrieval_text_sha256, vector FROM tool_embeddings
+             WHERE catalog_generation = ?1 AND embedding_model = ?2
+               AND embedding_revision = ?3 AND dimensions = ?4
+             ORDER BY tool_name",
+        )?;
+        statement
+            .query_map(
+                params![
+                    catalog_generation,
+                    embedding_model,
+                    embedding_revision,
+                    dimensions as i64
+                ],
+                |row| {
+                    let bytes = row.get::<_, Vec<u8>>(2)?;
+                    if bytes.len() != dimensions * 4 {
+                        return Err(rusqlite::Error::FromSqlConversionFailure(
+                            bytes.len(),
+                            rusqlite::types::Type::Blob,
+                            "invalid embedding vector size".into(),
+                        ));
+                    }
+                    Ok(StoredToolEmbedding {
+                        tool_name: row.get(0)?,
+                        retrieval_text_sha256: row.get(1)?,
+                        vector: bytes
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
+                            .map(|chunk| f32::from_le_bytes(*chunk))
+                            .collect(),
+                    })
+                },
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn load_reusable_tool_embeddings(
+        &self,
+        embedding_model: &str,
+        embedding_revision: &str,
+        dimensions: usize,
+    ) -> Result<Vec<StoredToolEmbedding>> {
+        let mut statement = self.connection.prepare(
+            "SELECT tool_name, retrieval_text_sha256, vector FROM tool_embeddings
+             WHERE embedding_model = ?1 AND embedding_revision = ?2 AND dimensions = ?3
+             ORDER BY rowid DESC",
+        )?;
+        statement
+            .query_map(
+                params![embedding_model, embedding_revision, dimensions as i64],
+                |row| {
+                    let bytes = row.get::<_, Vec<u8>>(2)?;
+                    if bytes.len() != dimensions * 4 {
+                        return Err(rusqlite::Error::FromSqlConversionFailure(
+                            bytes.len(),
+                            rusqlite::types::Type::Blob,
+                            std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "invalid embedding vector size",
+                            )
+                            .into(),
+                        ));
+                    }
+                    Ok(StoredToolEmbedding {
+                        tool_name: row.get(0)?,
+                        retrieval_text_sha256: row.get(1)?,
+                        vector: bytes
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
+                            .map(|chunk| f32::from_le_bytes(*chunk))
+                            .collect(),
+                    })
+                },
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn save_tool_embedding(
+        &self,
+        catalog_generation: &str,
+        tool_name: &str,
+        retrieval_text_sha256: &str,
+        embedding_model: &str,
+        embedding_revision: &str,
+        dimensions: usize,
+        vector: &[f32],
+    ) -> Result<()> {
+        anyhow::ensure!(
+            vector.len() == dimensions,
+            "embedding dimensions do not match"
+        );
+        let bytes = vector
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        self.connection.execute(
+            "INSERT OR REPLACE INTO tool_embeddings (
+                catalog_generation, tool_name, retrieval_text_sha256, embedding_model,
+                embedding_revision, dimensions, vector
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                catalog_generation,
+                tool_name,
+                retrieval_text_sha256,
+                embedding_model,
+                embedding_revision,
+                dimensions as i64,
+                bytes
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn called_tools_in_correlation(
+        &self,
+        correlation_id: Uuid,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        let mut statement = self.connection.prepare(
+            "SELECT payload FROM events
+             WHERE event_type = 'action.requested' AND correlation_id = ?1
+             ORDER BY sequence DESC",
+        )?;
+        let mut rows = statement.query([correlation_id.to_string()])?;
+        let mut names = Vec::new();
+        while let Some(row) = rows.next()? {
+            let payload = serde_json::from_str::<serde_json::Value>(&row.get::<_, String>(0)?)?;
+            let Some(name) = payload.get("tool").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if !names.iter().any(|existing| existing == name) {
+                names.push(name.to_owned());
+                if names.len() == limit {
+                    break;
+                }
+            }
+        }
+        Ok(names)
     }
 
     pub fn query_logs(&self, query: &StoreLogQuery) -> Result<Vec<StoredLog>> {
@@ -1846,6 +2017,32 @@ mod tests {
         assert_eq!(stats.estimated_cost_usd, Some(0.00125));
         assert_eq!(stats.models[0].model, "gpt-test");
         assert!(stats.event_types.is_empty());
+    }
+
+    #[test]
+    fn durable_correlation_tool_usage_is_recent_unique_and_called_only() {
+        let store = EventStore::open(":memory:").unwrap();
+        let correlation = Uuid::now_v7();
+        for (tool, event_type) in [
+            ("workspace.read", "action.requested"),
+            ("not.called", "test.advertised"),
+            ("process.run", "action.requested"),
+            ("workspace.read", "action.requested"),
+        ] {
+            store
+                .append(&Event::new(
+                    event_type,
+                    "test",
+                    correlation,
+                    None,
+                    json!({ "tool": tool }),
+                ))
+                .unwrap();
+        }
+        assert_eq!(
+            store.called_tools_in_correlation(correlation, 50).unwrap(),
+            ["workspace.read", "process.run"]
+        );
     }
 
     #[test]

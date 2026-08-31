@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashSet},
+    sync::Arc,
+};
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
@@ -7,12 +10,15 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+const MAX_SEMANTIC_SEARCH_QUERY_BYTES: usize = 4_096;
+
 use crate::{
-    event::Event,
-    extension::{
-        ContextHookExecution, EventDraft, ExtensionManager, LoadedExtension,
-        ToolSuggestionHookExecution,
+    embedding::{
+        Embedder, FINAL_TOOL_LIMIT, MIN_TOOL_SIMILARITY, SEMANTIC_TOOL_LIMIT, ToolEmbeddingIndex,
+        event_tool_query,
     },
+    event::Event,
+    extension::{ContextHookExecution, EventDraft, ExtensionManager, LoadedExtension},
     store::{SharedEventStore, StoreEventQuery, StoreLogQuery},
 };
 
@@ -86,11 +92,35 @@ impl ToolCatalog {
 pub struct ToolRuntime {
     store: SharedEventStore,
     extensions: Arc<ExtensionManager>,
+    embeddings: Arc<ToolEmbeddingIndex>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SelectedTool {
+    pub tool: String,
+    pub score: Option<f32>,
+    pub rank: Option<usize>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolSelection {
+    pub records: Vec<SelectedTool>,
+    pub query_sha256: String,
 }
 
 impl ToolRuntime {
-    pub fn new(store: SharedEventStore, extensions: Arc<ExtensionManager>) -> Result<Self> {
-        let runtime = Self { store, extensions };
+    pub fn new(
+        store: SharedEventStore,
+        extensions: Arc<ExtensionManager>,
+        embedder: Arc<dyn Embedder>,
+    ) -> Result<Self> {
+        let embeddings = Arc::new(ToolEmbeddingIndex::new(embedder, store.clone()));
+        let runtime = Self {
+            store,
+            extensions,
+            embeddings,
+        };
         runtime.catalog()?;
         Ok(runtime)
     }
@@ -143,15 +173,97 @@ impl ToolRuntime {
         }))
     }
 
+    pub async fn initialize_catalog(&self) -> Result<()> {
+        let catalog = self.catalog()?;
+        let embeddings = self.embeddings.clone();
+        tokio::task::spawn_blocking(move || {
+            embeddings.ensure_catalog(&catalog.generation, catalog.definitions())
+        })
+        .await
+        .context("tool embedding index initialization task failed")??;
+        Ok(())
+    }
+
     pub fn context_hooks(&self, trigger: &Event) -> Result<Vec<ContextHookExecution>> {
         self.extensions.run_context_hooks(trigger)
     }
 
-    pub fn tool_suggestion_hooks(
+    pub fn embedding_model(&self) -> &str {
+        self.embeddings.model_id()
+    }
+
+    pub fn embedding_revision(&self) -> &str {
+        self.embeddings.revision()
+    }
+
+    pub async fn select_tools(
         &self,
-        trigger: &Event,
-    ) -> Result<Vec<ToolSuggestionHookExecution>> {
-        self.extensions.run_tool_suggestion_hooks(trigger)
+        catalog: Arc<ToolCatalog>,
+        event: &Event,
+        compiled_context: &[Value],
+    ) -> Result<ToolSelection> {
+        let query = event_tool_query(event, compiled_context);
+        let query_sha256 = format!("{:x}", Sha256::digest(query.as_bytes()));
+        let embeddings = self.embeddings.clone();
+        let generation = catalog.generation.clone();
+        let definitions = catalog.definitions.clone();
+        let correlation_id = event.correlation_id;
+        let discovered = (event.payload.get("tool").and_then(Value::as_str)
+            == Some("habibi.tools.search"))
+        .then(|| {
+            event
+                .payload
+                .pointer("/result/tools")
+                .and_then(Value::as_array)
+        })
+        .flatten()
+        .into_iter()
+        .flatten()
+        .filter_map(|tool| {
+            Some(crate::embedding::SemanticToolMatch {
+                tool: tool.get("tool")?.as_str()?.to_owned(),
+                score: tool.get("score")?.as_f64()? as f32,
+                rank: tool.get("rank")?.as_u64()? as usize,
+            })
+        })
+        .collect::<Vec<_>>();
+        let (mut semantic, used) = tokio::task::spawn_blocking(move || {
+            let semantic = embeddings.search(
+                &generation,
+                &definitions,
+                &query,
+                SEMANTIC_TOOL_LIMIT,
+                MIN_TOOL_SIMILARITY,
+            )?;
+            let used = embeddings.used_tools(correlation_id)?;
+            Ok::<_, anyhow::Error>((semantic, used))
+        })
+        .await
+        .context("semantic tool selection task failed")??;
+        for candidate in discovered {
+            if !semantic
+                .iter()
+                .any(|existing| existing.tool == candidate.tool)
+            {
+                semantic.push(candidate);
+            }
+        }
+        semantic.sort_by(|left, right| {
+            right
+                .score
+                .total_cmp(&left.score)
+                .then_with(|| left.tool.cmp(&right.tool))
+        });
+        let registered = catalog
+            .definitions
+            .iter()
+            .map(|definition| definition.name.clone())
+            .collect::<HashSet<_>>();
+        let records = merge_tool_candidates(&registered, used, semantic);
+        Ok(ToolSelection {
+            records,
+            query_sha256,
+        })
     }
 
     pub async fn execute(
@@ -165,7 +277,17 @@ impl ToolRuntime {
             .get(&call.name)
             .with_context(|| format!("tool '{}' is not in the pinned catalog", call.name))?;
         match provider {
-            ToolProvider::Builtin => self.execute_builtin(catalog, call, context),
+            ToolProvider::Builtin => {
+                let runtime = self.clone();
+                let catalog = catalog.clone();
+                let call = call.clone();
+                let context = context.clone();
+                tokio::task::spawn_blocking(move || {
+                    runtime.execute_builtin(&catalog, &call, &context)
+                })
+                .await
+                .context("built-in tool task failed")?
+            }
             ToolProvider::Extension(extension) => {
                 let extension = extension.clone();
                 let call = call.clone();
@@ -397,44 +519,42 @@ impl ToolRuntime {
     }
 
     fn tools_search(&self, catalog: &ToolCatalog, arguments: &Value) -> Result<ToolExecution> {
-        let query = required_string(arguments, "query")?;
+        let query = bounded_search_query(arguments)?;
         let limit = arguments
             .get("limit")
             .and_then(Value::as_u64)
             .unwrap_or(5)
             .clamp(1, 10) as usize;
-        let query_terms = search_terms(&query);
-        if query_terms.is_empty() {
-            bail!("tool search query must contain searchable text");
-        }
-        let mut matches = catalog
-            .definitions()
-            .iter()
-            .filter(|definition| definition.name != "habibi.tools.search")
-            .cloned()
-            .filter_map(|definition| {
-                let score = tool_search_score(&definition, &query_terms);
-                (score > 0).then_some((score, definition))
-            })
-            .collect::<Vec<_>>();
-        matches.sort_by(|(left_score, left), (right_score, right)| {
-            right_score
-                .cmp(left_score)
-                .then_with(|| left.name.cmp(&right.name))
-        });
+        let matches = self.embeddings.search(
+            &catalog.generation,
+            catalog.definitions(),
+            &query,
+            limit.saturating_add(1),
+            MIN_TOOL_SIMILARITY,
+        )?;
         let tools = matches
             .into_iter()
+            .filter(|candidate| candidate.tool != "habibi.tools.search")
             .take(limit)
-            .map(|(_, definition)| {
-                json!({
-                    "tool": definition.name,
-                    "description": definition.description,
-                    "schema": definition.input_schema,
+            .filter_map(|candidate| {
+                catalog.definition(&candidate.tool).map(|definition| {
+                    json!({
+                        "tool": definition.name,
+                        "description": definition.description,
+                        "schema": definition.input_schema,
+                        "score": candidate.score,
+                        "rank": candidate.rank,
+                    })
                 })
             })
             .collect::<Vec<_>>();
         Ok(ToolExecution {
-            result: json!({ "tools": tools }),
+            result: json!({
+                "tools": tools,
+                "embedding_model": self.embeddings.model_id(),
+                "embedding_revision": self.embeddings.revision(),
+                "minimum_similarity": MIN_TOOL_SIMILARITY,
+            }),
             events: vec![],
             host_events: vec![],
             failure: None,
@@ -463,27 +583,59 @@ impl ToolRuntime {
     }
 }
 
-fn search_terms(query: &str) -> Vec<String> {
-    query
-        .split(|character: char| !character.is_ascii_alphanumeric())
-        .filter(|term| !term.is_empty())
-        .map(str::to_ascii_lowercase)
-        .collect()
+fn merge_tool_candidates(
+    registered: &HashSet<String>,
+    used: Vec<String>,
+    semantic: Vec<crate::embedding::SemanticToolMatch>,
+) -> Vec<SelectedTool> {
+    let semantic_by_name = semantic
+        .iter()
+        .map(|candidate| (candidate.tool.as_str(), candidate))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut records = Vec::new();
+    let mut selected = HashSet::new();
+    for tool in used {
+        if records.len() == FINAL_TOOL_LIMIT {
+            break;
+        }
+        if !registered.contains(&tool) || !selected.insert(tool.clone()) {
+            continue;
+        }
+        let semantic = semantic_by_name.get(tool.as_str()).copied();
+        records.push(SelectedTool {
+            tool,
+            score: semantic.map(|candidate| candidate.score),
+            rank: semantic.map(|candidate| candidate.rank),
+            reason: if semantic.is_some() {
+                "both"
+            } else {
+                "used_in_correlation"
+            }
+            .into(),
+        });
+    }
+    for candidate in semantic {
+        if records.len() == FINAL_TOOL_LIMIT {
+            break;
+        }
+        if registered.contains(&candidate.tool) && selected.insert(candidate.tool.clone()) {
+            records.push(SelectedTool {
+                tool: candidate.tool,
+                score: Some(candidate.score),
+                rank: Some(candidate.rank),
+                reason: "semantic_match".into(),
+            });
+        }
+    }
+    records
 }
 
-fn tool_search_score(definition: &ToolDefinition, terms: &[String]) -> u64 {
-    let name = definition.name.to_ascii_lowercase();
-    let description = definition.description.to_ascii_lowercase();
-    let schema = definition.input_schema.to_string().to_ascii_lowercase();
-    terms
-        .iter()
-        .map(|term| {
-            u64::from(name == *term) * 100
-                + u64::from(name.contains(term)) * 20
-                + u64::from(description.contains(term)) * 5
-                + u64::from(schema.contains(term))
-        })
-        .sum()
+fn bounded_search_query(arguments: &Value) -> Result<String> {
+    let query = required_string(arguments, "query")?;
+    if query.len() > MAX_SEMANTIC_SEARCH_QUERY_BYTES {
+        bail!("'query' must not exceed {MAX_SEMANTIC_SEARCH_QUERY_BYTES} UTF-8 bytes");
+    }
+    Ok(query)
 }
 
 fn required_string(arguments: &Value, key: &str) -> Result<String> {
@@ -517,7 +669,7 @@ fn builtin_definitions() -> Vec<ToolDefinition> {
             json!({
                 "type":"object",
                 "properties":{
-                    "query":{"type":"string","description":"Describe the capability or operation needed."},
+                    "query":{"type":"string","minLength":1,"maxLength":4096,"description":"Describe the capability or operation needed. Maximum 4096 UTF-8 bytes."},
                     "limit":{"type":"integer","minimum":1,"maximum":10}
                 },
                 "required":["query"]
@@ -614,6 +766,36 @@ mod tests {
     }
 
     #[test]
+    fn semantic_and_used_union_is_deduplicated_used_first_and_bounded() {
+        let registered = (0..80)
+            .map(|index| format!("tool.{index:02}"))
+            .collect::<HashSet<_>>();
+        let used = (0..50)
+            .rev()
+            .map(|index| format!("tool.{index:02}"))
+            .collect::<Vec<_>>();
+        let semantic = (0..80)
+            .map(|index| crate::embedding::SemanticToolMatch {
+                tool: format!("tool.{index:02}"),
+                score: 1.0 - index as f32 / 100.0,
+                rank: index + 1,
+            })
+            .collect::<Vec<_>>();
+        let selected = merge_tool_candidates(&registered, used, semantic);
+        assert_eq!(selected.len(), FINAL_TOOL_LIMIT);
+        assert_eq!(selected[0].tool, "tool.49");
+        assert_eq!(selected[0].reason, "both");
+        assert_eq!(
+            selected
+                .iter()
+                .map(|record| &record.tool)
+                .collect::<HashSet<_>>()
+                .len(),
+            FINAL_TOOL_LIMIT
+        );
+    }
+
+    #[test]
     fn rejects_invalid_tool_schemas_before_advertisement() {
         let directory = tempfile::tempdir().unwrap();
         let extension_directory = directory.path().join("example");
@@ -630,10 +812,14 @@ mod tests {
         .unwrap();
         let store = EventStore::open(":memory:").unwrap().shared();
         let extensions = Arc::new(ExtensionManager::load(directory.path(), store.clone()).unwrap());
-        let error = ToolRuntime::new(store, extensions)
-            .err()
-            .unwrap()
-            .to_string();
+        let error = ToolRuntime::new(
+            store,
+            extensions,
+            Arc::new(crate::embedding::DeterministicTestEmbedder),
+        )
+        .err()
+        .unwrap()
+        .to_string();
         assert!(error.contains("example.bad"), "{error}");
         assert!(error.contains("invalid input schema"), "{error}");
     }
@@ -643,10 +829,15 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let store = EventStore::open(":memory:").unwrap().shared();
         let extensions = Arc::new(ExtensionManager::load(directory.path(), store.clone()).unwrap());
-        let runtime = ToolRuntime::new(store, extensions).unwrap();
+        let runtime = ToolRuntime::new(
+            store,
+            extensions,
+            Arc::new(crate::embedding::DeterministicTestEmbedder),
+        )
+        .unwrap();
         let catalog = runtime.catalog().unwrap();
         let execution = runtime
-            .tools_search(&catalog, &json!({ "query": "query events", "limit": 2 }))
+            .tools_search(&catalog, &json!({ "query": "query events", "limit": 10 }))
             .unwrap();
         let first = execution.result["tools"]
             .as_array()
@@ -656,7 +847,25 @@ mod tests {
         assert!(first.get("tool").is_some());
         assert!(first.get("description").is_some());
         assert!(first.get("schema").is_some());
-        assert_eq!(first.as_object().unwrap().len(), 3);
+        assert!(first.get("score").is_some());
+        assert!(first.get("rank").is_some());
+        assert_eq!(first.as_object().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn semantic_tool_search_query_is_bounded_before_inference() {
+        assert_eq!(
+            bounded_search_query(&json!({ "query": "x".repeat(MAX_SEMANTIC_SEARCH_QUERY_BYTES) }))
+                .unwrap()
+                .len(),
+            MAX_SEMANTIC_SEARCH_QUERY_BYTES
+        );
+        let error = bounded_search_query(
+            &json!({ "query": "x".repeat(MAX_SEMANTIC_SEARCH_QUERY_BYTES + 1) }),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("4096 UTF-8 bytes"), "{error}");
     }
 
     #[tokio::test]
@@ -666,7 +875,12 @@ mod tests {
         write_tool_extension(&extension_directory, "1.0.0", "old");
         let store = EventStore::open(":memory:").unwrap().shared();
         let extensions = Arc::new(ExtensionManager::load(directory.path(), store.clone()).unwrap());
-        let runtime = ToolRuntime::new(store, extensions.clone()).unwrap();
+        let runtime = ToolRuntime::new(
+            store,
+            extensions.clone(),
+            Arc::new(crate::embedding::DeterministicTestEmbedder),
+        )
+        .unwrap();
         let catalog = runtime.catalog().unwrap();
         write_tool_extension(&extension_directory, "2.0.0", "new");
         extensions.reload("example").unwrap();

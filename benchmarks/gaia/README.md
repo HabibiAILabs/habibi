@@ -64,8 +64,8 @@ Using `gpt-5.6-luna` on the 2023 validation data:
 
 These are tiny diagnostic slices, not a GAIA score. They exposed and fixed a redundant Chat
 acknowledgment loop, unreliable copying of opaque session UUIDs (now replaced by scoped `current`),
-and repeated pruning telemetry. A configured search suggestion bypasses empty completions after
-registry discovery, but the no-key SearXNG backend proved rate-limited. Remaining leading gaps are a
+and repeated pruning telemetry. Semantic per-event tool retrieval now replaces configured tool
+suggestions, while the no-key SearXNG backend remains rate-limited. Remaining leading gaps are a
 reliable search provider, bounded page retrieval, and PDF/Office/image/audio/video analysis tools.
 
 Summarize one or more result files with:

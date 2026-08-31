@@ -137,27 +137,12 @@ struct RegisteredHook {
     handler: RegistryKey,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ToolSuggestion {
-    pub tool: String,
-    pub reason: Option<String>,
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub struct ContextHookExecution {
     pub extension_id: String,
     pub hook: String,
     pub duration_ms: u128,
     pub contribution: Option<ContextContribution>,
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ToolSuggestionHookExecution {
-    pub extension_id: String,
-    pub hook: String,
-    pub duration_ms: u128,
-    pub suggestions: Vec<ToolSuggestion>,
     pub error: Option<String>,
 }
 
@@ -173,7 +158,6 @@ struct LuaState {
     routes: Vec<RegisteredRoute>,
     tools: Vec<RegisteredTool>,
     context_hooks: Vec<RegisteredHook>,
-    tool_suggestion_hooks: Vec<RegisteredHook>,
     filesystem_host: Option<FilesystemHost>,
     #[cfg(target_os = "linux")]
     process_host: Option<ProcessHost>,
@@ -231,7 +215,6 @@ impl LoadedExtension {
         let registered_routes = Arc::new(Mutex::new(Vec::new()));
         let registered_tools = Arc::new(Mutex::new(Vec::new()));
         let context_hooks = Arc::new(Mutex::new(Vec::new()));
-        let tool_suggestion_hooks = Arc::new(Mutex::new(Vec::new()));
         let filesystem_host = manifest
             .capabilities
             .filesystem
@@ -305,23 +288,6 @@ impl LoadedExtension {
                         .map_err(|_| mlua::Error::external("tool registry lock poisoned"))?
                         .push(RegisteredTool {
                             definition,
-                            handler: lua.create_registry_value(handler)?,
-                        });
-                    Ok(())
-                })?,
-            )?;
-            let suggestion_registry = tool_suggestion_hooks.clone();
-            tools.set(
-                "suggest",
-                lua.create_function(move |lua, (name, handler): (String, Function)| {
-                    validate_hook_name(&name).map_err(mlua::Error::external)?;
-                    suggestion_registry
-                        .lock()
-                        .map_err(|_| {
-                            mlua::Error::external("tool suggestion registry lock poisoned")
-                        })?
-                        .push(RegisteredHook {
-                            name,
                             handler: lua.create_registry_value(handler)?,
                         });
                     Ok(())
@@ -422,15 +388,8 @@ impl LoadedExtension {
             .map_err(|_| anyhow::anyhow!("context hook registry lock poisoned"))?
             .drain(..)
             .collect();
-        let mut tool_suggestion_hooks: Vec<RegisteredHook> = tool_suggestion_hooks
-            .lock()
-            .map_err(|_| anyhow::anyhow!("tool suggestion registry lock poisoned"))?
-            .drain(..)
-            .collect();
         validate_unique_hooks(&manifest.id, "context", &context_hooks)?;
-        validate_unique_hooks(&manifest.id, "tool suggestion", &tool_suggestion_hooks)?;
         context_hooks.sort_by(|left, right| left.name.cmp(&right.name));
-        tool_suggestion_hooks.sort_by(|left, right| left.name.cmp(&right.name));
         let static_files = load_static_files(directory, &manifest)?;
         let generation = extension_generation(&manifest_source, &source, &static_files);
         let execution_snapshot = snapshot_extension(directory)?;
@@ -447,7 +406,6 @@ impl LoadedExtension {
                 routes,
                 tools,
                 context_hooks,
-                tool_suggestion_hooks,
                 filesystem_host,
                 #[cfg(target_os = "linux")]
                 process_host,
@@ -531,73 +489,6 @@ impl LoadedExtension {
                 hook: hook.name.clone(),
                 duration_ms: started.elapsed().as_millis(),
                 contribution,
-                error,
-            });
-        }
-        Ok(executions)
-    }
-
-    pub fn run_tool_suggestion_hooks(
-        &self,
-        trigger: &Event,
-    ) -> Result<Vec<ToolSuggestionHookExecution>> {
-        if !self.is_enabled() {
-            return Ok(Vec::new());
-        }
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| anyhow::anyhow!("extension '{}' lock poisoned", self.manifest.id))?;
-        let mut executions = Vec::new();
-        for hook in &state.tool_suggestion_hooks {
-            state.instruction_budget.store(100, Ordering::Relaxed);
-            let started = Instant::now();
-            let attempted: Result<Vec<ToolSuggestion>> = (|| {
-                let handler: Function = state.lua.registry_value(&hook.handler)?;
-                let argument = state.lua.to_value(trigger)?;
-                let result: LuaValue = handler.call(argument).with_context(|| {
-                    format!(
-                        "extension '{}' tool suggestion hook '{}' failed",
-                        self.manifest.id, hook.name
-                    )
-                })?;
-                let suggestions: Vec<ToolSuggestion> = state.lua.from_value(result)?;
-                for suggestion in &suggestions {
-                    if !suggestion
-                        .tool
-                        .starts_with(&format!("{}.", self.manifest.id))
-                    {
-                        bail!(
-                            "extension '{}' suggestion hook '{}' suggested tool '{}' outside its namespace",
-                            self.manifest.id,
-                            hook.name,
-                            suggestion.tool
-                        );
-                    }
-                    if !state
-                        .tools
-                        .iter()
-                        .any(|tool| tool.definition.name == suggestion.tool)
-                    {
-                        bail!(
-                            "extension '{}' suggestion hook '{}' suggested unknown tool '{}'",
-                            self.manifest.id,
-                            hook.name,
-                            suggestion.tool
-                        );
-                    }
-                }
-                Ok(suggestions)
-            })();
-            let (suggestions, error) = match attempted {
-                Ok(suggestions) => (suggestions, None),
-                Err(error) => (Vec::new(), Some(error.to_string())),
-            };
-            executions.push(ToolSuggestionHookExecution {
-                extension_id: self.manifest.id.clone(),
-                hook: hook.name.clone(),
-                duration_ms: started.elapsed().as_millis(),
-                suggestions,
                 error,
             });
         }
@@ -845,17 +736,6 @@ impl ExtensionManager {
             .map(|executions| executions.into_iter().flatten().collect())
     }
 
-    pub fn run_tool_suggestion_hooks(
-        &self,
-        trigger: &Event,
-    ) -> Result<Vec<ToolSuggestionHookExecution>> {
-        self.snapshot()
-            .iter()
-            .map(|extension| extension.run_tool_suggestion_hooks(trigger))
-            .collect::<Result<Vec<_>>>()
-            .map(|executions| executions.into_iter().flatten().collect())
-    }
-
     pub fn tool_catalog_entries(&self) -> Vec<(ToolDefinition, Arc<LoadedExtension>)> {
         self.snapshot()
             .iter()
@@ -882,19 +762,17 @@ impl ExtensionManager {
             .snapshot()
             .iter()
             .map(|extension| {
-                let (route_count, tool_count, context_hook_count, suggestion_hook_count) =
-                    extension
-                        .state
-                        .lock()
-                        .map(|state| {
-                            (
-                                state.routes.len(),
-                                state.tools.len(),
-                                state.context_hooks.len(),
-                                state.tool_suggestion_hooks.len(),
-                            )
-                        })
-                        .unwrap_or_default();
+                let (route_count, tool_count, context_hook_count) = extension
+                    .state
+                    .lock()
+                    .map(|state| {
+                        (
+                            state.routes.len(),
+                            state.tools.len(),
+                            state.context_hooks.len(),
+                        )
+                    })
+                    .unwrap_or_default();
                 let mut provides = Vec::new();
                 if extension
                     .manifest
@@ -931,9 +809,6 @@ impl ExtensionManager {
                 }
                 if context_hook_count > 0 {
                     provides.push(format!("{context_hook_count} context hooks"));
-                }
-                if suggestion_hook_count > 0 {
-                    provides.push(format!("{suggestion_hook_count} tool suggestion hooks"));
                 }
                 let installation = ExtensionInstaller::new(self.directory.clone())
                     .metadata(&extension.manifest.id)
@@ -1643,6 +1518,27 @@ mod tests {
             "workspace.file.created"
         );
         assert_eq!(fs::read_to_string(output).unwrap(), "sentinel-content");
+    }
+
+    #[test]
+    fn tool_suggestion_api_is_not_available() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("extension.toml"),
+            "id = \"example\"\nname = \"Example\"\nversion = \"1.0.0\"\napi_version = 2\n[capabilities]\ntools = true\n",
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("extension.lua"),
+            "habibi.tools.suggest('legacy', function() return {} end)",
+        )
+        .unwrap();
+        let store = EventStore::open(":memory:").unwrap().shared();
+        let error = LoadedExtension::load(directory.path(), store)
+            .err()
+            .unwrap();
+        let error = format!("{error:#}");
+        assert!(error.contains("suggest"), "{error}");
     }
 
     #[test]
