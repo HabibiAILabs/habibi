@@ -1,4 +1,4 @@
-import { createLiveBatch, createPermanentFailure, createRequestGate, expireLiveIds, intersectEventIds, pruneLiveIds } from "/assets/graph-layout.mjs";
+import { createLiveBatch, createPermanentFailure, createRequestGate, describeGraphFailure, expireLiveIds, intersectEventIds, pruneLiveIds } from "/assets/graph-layout.mjs";
 import { buildMemoryScene, pickMemoryNode } from "/assets/memory-graph-state.mjs";
 import { createMemoryGraphRenderer } from "/assets/memory-graph.js";
 
@@ -383,7 +383,7 @@ function setGraphLiveStatus(text, className = "") {
 
 function showGraphFatal(message) {
   graphFatal.hidden = false;
-  graphFatal.textContent = `${message} Reload this page after fixing WebGPU availability.`;
+  graphFatal.textContent = describeGraphFailure(message);
   graphStatus.textContent = message;
   graphStatus.classList.add("error");
 }

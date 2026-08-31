@@ -1,3 +1,17 @@
+export function describeGraphFailure(value) {
+  const message = value instanceof Error ? value.message : String(value);
+  if (/not enough memory|out[ -]of[ -]memory|memory allocation/i.test(message)) {
+    return "Live memory graph paused because this browser ran out of GPU memory. Habibi is still available; close GPU-heavy tabs or reload to try again.";
+  }
+  if (/WebGPU is unavailable|secure localhost context/i.test(message)) {
+    return "The live memory graph needs WebGPU in a secure localhost browser context. Habibi remains available through the navigation above.";
+  }
+  if (/device was lost|GPU device.*lost/i.test(message)) {
+    return "The live memory graph stopped after the GPU device was lost. Habibi is still available; reload to start a new graph renderer.";
+  }
+  return `${message} The live memory graph has stopped safely; reload to try again.`;
+}
+
 export function createPermanentFailure(onFirst = () => {}) {
   let error = null;
   return {

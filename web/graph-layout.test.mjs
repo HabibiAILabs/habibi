@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createLiveBatch, createPermanentFailure, createRequestGate, expireLiveIds, intersectEventIds, pruneLiveIds } from "./graph-layout.mjs";
+import { createLiveBatch, createPermanentFailure, createRequestGate, describeGraphFailure, expireLiveIds, intersectEventIds, pruneLiveIds } from "./graph-layout.mjs";
 
 test("fatal graph state latches the first failure permanently", () => {
   let shutdowns = 0;
@@ -12,6 +12,13 @@ test("fatal graph state latches the first failure permanently", () => {
   assert.equal(failure.error, first.error);
   assert.equal(failure.error.message, "device lost");
   assert.equal(shutdowns, 1, "fatal cleanup runs exactly once");
+});
+
+test("graph failures explain GPU exhaustion without breaking the rest of Habibi", () => {
+  const message = describeGraphFailure(new Error("Not enough memory left."));
+  assert.match(message, /ran out of GPU memory/);
+  assert.match(message, /Habibi is still available/);
+  assert.doesNotMatch(message, /fixing WebGPU availability/);
 });
 
 test("request generations reject stale graph responses", () => {
