@@ -330,11 +330,10 @@ fn query_event_graph(
         .iter()
         .map(|stored| stored.event.id)
         .collect::<Vec<_>>();
-    let mut links = store.event_links_for_events(&event_ids, 2_001)?;
+    let mut links = message_reply_links(&events);
+    links.extend(store.event_links_for_events(&event_ids, 2_001)?);
     let links_truncated = links.len() > 2_000;
-    if links_truncated {
-        links.pop();
-    }
+    links.truncate(2_000);
     Ok(build_event_graph_response(
         events,
         links,
@@ -342,6 +341,35 @@ fn query_event_graph(
         links_truncated,
         cursor,
     ))
+}
+
+fn message_reply_links(events: &[crate::event::StoredEvent]) -> Vec<Value> {
+    events
+        .iter()
+        .filter_map(|stored| {
+            if stored.event.event_type != "chat.message.created"
+                && stored.event.event_type != "chat.session.started"
+            {
+                return None;
+            }
+            let target = stored
+                .event
+                .payload
+                .get("in_reply_to_event_id")
+                .and_then(Value::as_str)?;
+            let target = Uuid::parse_str(target).ok()?;
+            (target != stored.event.id).then(|| {
+                json!({
+                    "link_id": format!("chat.reply_to:{}", stored.event.id),
+                    "from_event_id": stored.event.id,
+                    "to_event_id": target,
+                    "relation": "chat.reply_to",
+                    "description": "Direct chat reply",
+                    "bidirectional": false,
+                })
+            })
+        })
+        .collect()
 }
 
 fn build_event_graph_response(
@@ -1705,6 +1733,43 @@ mod tests {
         .unwrap();
         assert_eq!(empty["events"], json!([]));
         assert_eq!(empty["cursor"], 2);
+    }
+
+    #[test]
+    fn event_graph_projects_explicit_chat_reply_facts() {
+        let correlation = Uuid::now_v7();
+        let parent = Event::new(
+            "chat.message.created",
+            "extension:chat",
+            correlation,
+            None,
+            json!({ "session_id": "session", "role": "user", "content": "Hello" }),
+        );
+        let reply = Event::new(
+            "chat.message.created",
+            "tool:chat.send_message",
+            correlation,
+            None,
+            json!({
+                "session_id": "session", "role": "assistant", "content": "Hi",
+                "in_reply_to_event_id": parent.id,
+            }),
+        );
+        let links = message_reply_links(&[
+            StoredEvent {
+                sequence: 1,
+                event: parent.clone(),
+            },
+            StoredEvent {
+                sequence: 2,
+                event: reply.clone(),
+            },
+        ]);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0]["from_event_id"], json!(reply.id));
+        assert_eq!(links[0]["to_event_id"], json!(parent.id));
+        assert_eq!(links[0]["relation"], "chat.reply_to");
+        assert_eq!(links[0]["bidirectional"], false);
     }
 
     #[test]

@@ -19,6 +19,17 @@ test("memory layout is deterministic across input order and separates correlatio
   assert.deepEqual(left.positions.get("c"), memoryLayout(events.slice(2)).positions.get("c"), "a memory must not move when older bounded-window events roll out");
 });
 
+test("chat memories in one session remain spatially grouped across turn correlations", () => {
+  const sessionEvents = [
+    { id: "s1", sequence: 10, event_type: "chat.message.created", source: "extension:chat", correlation_id: "turn-1", payload: { session_id: "shared" } },
+    { id: "s2", sequence: 20, event_type: "chat.message.created", source: "tool:chat.send_message", correlation_id: "turn-2", payload: { session_id: "shared" } },
+  ];
+  const positions = memoryLayout(sessionEvents).positions;
+  const left = positions.get("s1");
+  const right = positions.get("s2");
+  assert.ok(Math.hypot(left.x - right.x, left.z - right.z) < 0.5);
+});
+
 test("causal family is cycle-safe and reports a missing visible parent", () => {
   const family = causalFamily(events, "c");
   assert.deepEqual([...family.ancestors], ["b", "a"]);

@@ -16,10 +16,11 @@ export function memoryLayout(events) {
   const ordered = [...events].sort((left, right) => left.sequence - right.sequence || left.id.localeCompare(right.id));
   const positions = new Map();
   ordered.forEach(event => {
-    const correlationHash = stableHash(event.correlation_id);
+    const sessionId = event.event_type.startsWith("chat.") ? event.payload?.session_id : null;
+    const groupHash = stableHash(sessionId ? `chat-session:${sessionId}` : event.correlation_id);
     const eventHash = stableHash(event.id);
-    const angle = (correlationHash % 6283) / 1000;
-    const ring = 0.42 + ((correlationHash >>> 8) % 1000) / 1000 * 0.92;
+    const angle = (groupHash % 6283) / 1000;
+    const ring = 0.42 + ((groupHash >>> 8) % 1000) / 1000 * 0.92;
     const jitterAngle = (eventHash % 6283) / 1000;
     const jitterRadius = 0.06 + ((eventHash >>> 7) % 1000) / 1000 * 0.18;
     positions.set(event.id, {
