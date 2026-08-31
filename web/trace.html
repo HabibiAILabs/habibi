@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Trace · Habibi</title><link rel="stylesheet" href="/assets/core.css"></head><body>
-<header class="topbar"><a class="wordmark" href="/"><img src="/assets/habibi-logo.svg" alt="">Habibi</a><nav class="topnav"><a href="/trace" aria-current="page">Trace</a><a href="/events">Events</a><a href="/logs">Logs</a><a href="/stats">Stats</a><a href="/extensions">Extensions</a><a href="/studio">Studio</a></nav></header>
+<header class="topbar"><a class="wordmark" href="/"><img src="/assets/habibi-logo.svg" alt="">Habibi</a><nav class="topnav"><a href="/trace?view=graph">Live graph</a><a href="/trace" aria-current="page">Trace</a><a href="/events">Events</a><a href="/logs">Logs</a><a href="/stats">Stats</a><a href="/extensions">Extensions</a><a href="/studio">Studio</a></nav></header>
 <main class="trace-shell">
   <div class="page-heading trace-heading"><div><p class="eyebrow">CAUSAL OBSERVABILITY</p><h1>System trace</h1></div><p>Follow roots, causes, context assembly, model processing, and tool execution as one connected path.</p></div>
   <form id="trace-search" class="trace-search"><label>Event or correlation ID<input id="trace-id" name="id" autocomplete="off" placeholder="Paste an event or correlation UUID"></label><button class="primary" type="submit">Open trace</button><button class="secondary" id="latest-trace" type="button">Latest</button><label class="trace-live"><input id="trace-live" type="checkbox"> Live</label></form>
@@ -9,22 +9,26 @@
   <section class="trace-workspace">
     <div class="trace-map-panel">
       <div class="trace-map-heading">
-        <div class="trace-view-tabs" role="tablist" aria-label="Trace view"><button id="timeline-tab" class="active" type="button" role="tab" aria-selected="true" aria-controls="trace-map" tabindex="0">Timeline</button><button id="graph-tab" type="button" role="tab" aria-selected="false" aria-controls="event-graph" tabindex="-1">Relationships</button></div>
+        <div class="trace-view-tabs" role="tablist" aria-label="Trace view"><button id="timeline-tab" class="active" type="button" role="tab" aria-selected="true" aria-controls="trace-map" tabindex="0">Timeline</button><button id="graph-tab" type="button" role="tab" aria-selected="false" aria-controls="event-graph" tabindex="-1">Live graph</button></div>
         <div class="trace-map-keys"><span><span class="trace-rail-key event"></span>Events</span><span><span class="trace-rail-key operation"></span>Processing</span></div>
       </div>
       <div id="trace-map" class="trace-map" role="tabpanel" aria-labelledby="timeline-tab"></div>
       <section id="event-graph" class="event-graph" role="tabpanel" aria-labelledby="graph-tab" hidden>
-        <form id="graph-filters" class="graph-filters">
-          <label>Event type<input id="graph-type" name="type" type="text" placeholder="Exact type"></label>
-          <label>Source<input id="graph-source" name="source" type="text" placeholder="Exact source"></label>
-          <label>Correlation ID<input id="graph-correlation" name="correlation_id" type="text" placeholder="Optional UUID"></label>
-          <label>Newest nodes<select id="graph-limit" name="limit"><option>100</option><option selected>250</option><option>500</option><option>1000</option></select></label>
-          <button class="primary" type="submit">Apply</button>
-        </form>
+        <details id="graph-filter-panel" class="graph-filter-panel">
+          <summary>Filters <span id="graph-filter-summary">All live events</span></summary>
+          <form id="graph-filters" class="graph-filters">
+            <label>Event type<input id="graph-type" name="type" type="text" list="graph-event-types" placeholder="All event types"><datalist id="graph-event-types"></datalist></label>
+            <label>Source<input id="graph-source" name="source" type="text" placeholder="All sources"></label>
+            <label>Correlation ID<input id="graph-correlation" name="correlation_id" type="text" placeholder="All correlations"></label>
+            <label>Newest nodes<select id="graph-limit" name="limit"><option>100</option><option selected>250</option><option>500</option><option>1000</option></select></label>
+            <button class="primary" type="submit">Apply</button>
+            <button id="graph-reset-filters" class="secondary" type="button">Show all</button>
+          </form>
+        </details>
         <div class="graph-toolbar" aria-label="Graph controls"><button id="graph-zoom-in" type="button" title="Zoom in">+</button><button id="graph-zoom-out" type="button" title="Zoom out">−</button><button id="graph-fit" type="button">Fit</button><button id="graph-focus" type="button" disabled>Focus selected</button><button id="graph-clear" type="button">Clear highlight</button><button id="graph-live" type="button" aria-pressed="true">Pause live</button><span id="graph-live-status" class="graph-live-status" role="status">Live connecting…</span><span class="graph-hint">Drag to pan · scroll to zoom · double-click to open</span></div>
         <div class="graph-stage"><svg id="graph-svg" aria-hidden="true" focusable="false"><defs><marker id="graph-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z"></path></marker></defs><g id="graph-viewport"></g></svg><div id="graph-tooltip" class="graph-tooltip" hidden></div><div id="graph-empty" class="graph-empty" hidden>No events match these filters.</div></div>
         <details class="graph-event-index"><summary>Keyboard-accessible event list</summary><div id="graph-event-list" class="graph-event-list" role="list" aria-label="Visible events"></div></details>
-        <div class="graph-legend" aria-label="Graph legend"><span><i class="causal"></i>Causation →</span><span><i class="semantic"></i>Semantic relation</span><span><i class="correlated"></i>Selected correlation</span><span><i class="boundary"></i>Parent outside window</span></div>
+        <div class="graph-legend" aria-label="Graph legend"><span><i class="node chat"></i>Messages</span><span><i class="node action"></i>Actions</span><span><i class="node system"></i>System</span><span><i class="causal"></i>Causation →</span><span><i class="semantic"></i>Semantic relation</span><span><i class="correlated"></i>Selected correlation</span><span><i class="boundary"></i>Parent outside window</span></div>
         <div id="graph-status" class="graph-status muted" role="status"></div>
       </section>
     </div>

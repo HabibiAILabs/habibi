@@ -180,10 +180,7 @@ and direct links between logs and their trigger events while preserving the comp
 `GET /api/trace` accepts an `event_id` or `correlation_id` and returns a bounded joined trace with
 each event's causal root and children plus correlated operational logs. `/trace` renders those two
 streams as an interactive H-shaped path with paired tool inputs/results, exact model inputs/outputs,
-and each compiled context. Its Relationships view uses `GET /api/event-graph` to render a bounded,
-filterable graph of durable causation and semantic links. Correlation is a selectable highlight, never
-a fabricated edge. The graph defaults to the newest 250 events, accepts exact event type, source, and
-correlation filters, caps nodes at 1,000 and semantic links at 2,000, and marks causal parents outside
+and each compiled context. Its Live graph view (`/trace?view=graph`) uses `GET /api/event-graph` to render a bounded graph of durable causation and semantic links. It opens on all live events; optional collapsed filters accept exact event type, source, and correlation values. Correlation is a selectable highlight, never a fabricated edge. Event families are color-coded. The graph defaults to the newest 250 events, caps nodes at 1,000 and semantic links at 2,000, and marks causal parents outside
 the visible window. The response includes a global event high-water `cursor` so filtered live views do
 not replay unrelated history. While open it batches SSE updates into live node arrivals without resetting
 pan or zoom; hover reveals immediate neighbors, and double-clicking a node opens its causal trace. A

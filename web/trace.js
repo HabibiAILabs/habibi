@@ -12,6 +12,9 @@ const timelineTab = document.querySelector("#timeline-tab");
 const graphTab = document.querySelector("#graph-tab");
 const graphPanel = document.querySelector("#event-graph");
 const graphForm = document.querySelector("#graph-filters");
+const graphFilterPanel = document.querySelector("#graph-filter-panel");
+const graphFilterSummary = document.querySelector("#graph-filter-summary");
+const graphEventTypes = document.querySelector("#graph-event-types");
 const graphType = document.querySelector("#graph-type");
 const graphSource = document.querySelector("#graph-source");
 const graphCorrelation = document.querySelector("#graph-correlation");
@@ -41,6 +44,7 @@ let graphEventSource = null;
 let graphLiveEnabled = true;
 let graphInitialFit = true;
 const recentLiveIds = new Map();
+const knownGraphTypes = new Set();
 let graphLiveExpiryTimer = null;
 const graphRequestGate = createRequestGate();
 let graphAbortController = null;
@@ -341,6 +345,7 @@ function disclosure(title, value) {
 
 function setView(view, { load = true } = {}) {
   const graphActive = view === "graph";
+  document.body.classList.toggle("graph-mode", graphActive);
   map.hidden = graphActive;
   graphPanel.hidden = !graphActive;
   timelineTab.classList.toggle("active", !graphActive);
@@ -468,6 +473,8 @@ async function openGraph({ preserveViewport = false, liveIds = [], activeFilters
     if (!graphRequestGate.isCurrent(generation)) return;
     graph = result;
     graphFilters = filters;
+    result.events.forEach(event => knownGraphTypes.add(event.event_type));
+    renderGraphFilterUi(filters);
     const parameters = new URLSearchParams(location.search);
     for (const name of ["graph_type", "graph_source", "graph_correlation", "graph_limit"]) parameters.delete(name);
     if (filters.eventType) parameters.set("graph_type", filters.eventType);
@@ -598,10 +605,27 @@ function graphEdge(edge, positions, eventById) {
   return path;
 }
 
+function eventFamily(event) {
+  if (event.event_type.startsWith("chat.")) return "chat";
+  if (event.event_type.startsWith("action.") || event.event_type === "actions.completed") return "action";
+  if (event.source.startsWith("extension:") || event.source.startsWith("tool:")) return "extension";
+  return "system";
+}
+
+function renderGraphFilterUi(filters) {
+  const active = [filters.eventType && `type ${filters.eventType}`, filters.source && `source ${filters.source}`, filters.correlation && `correlation ${short(filters.correlation)}`].filter(Boolean);
+  graphFilterSummary.textContent = active.length ? active.join(" · ") : "All live events";
+  graphEventTypes.replaceChildren(...[...knownGraphTypes].sort().map(type => {
+    const option = document.createElement("option");
+    option.value = type;
+    return option;
+  }));
+}
+
 function graphNode(event, position, showLabel, arriving) {
   const live = recentLiveIds.has(event.id);
   const group = svgEl("g", {
-    class: `event-graph-node${live ? " live" : ""}${arriving ? " arriving" : ""}`,
+    class: `event-graph-node family-${eventFamily(event)}${live ? " live" : ""}${arriving ? " arriving" : ""}`,
     transform: `translate(${position.x} ${position.y})`,
     "data-id": event.id,
     "data-correlation": event.correlation_id,
@@ -864,6 +888,13 @@ graphForm.addEventListener("submit", event => {
   graphInitialFit = true;
   openGraph().catch(handleGraphError);
 });
+document.querySelector("#graph-reset-filters").addEventListener("click", () => {
+  graphType.value = "";
+  graphSource.value = "";
+  graphCorrelation.value = "";
+  graphInitialFit = true;
+  openGraph().catch(handleGraphError);
+});
 document.querySelector("#graph-zoom-in").addEventListener("click", () => zoomGraph(1.25));
 document.querySelector("#graph-zoom-out").addEventListener("click", () => zoomGraph(.8));
 document.querySelector("#graph-fit").addEventListener("click", fitGraph);
@@ -936,16 +967,18 @@ if ("ResizeObserver" in globalThis) new ResizeObserver(scheduleGraphRefit).obser
 else window.addEventListener("resize", scheduleGraphRefit);
 
 const parameters = new URLSearchParams(location.search);
+const graphMode = parameters.get("view") === "graph";
 graphType.value = parameters.get("graph_type") || "";
 graphSource.value = parameters.get("graph_source") || "";
 graphCorrelation.value = parameters.get("graph_correlation") || "";
 if (["100", "250", "500", "1000"].includes(parameters.get("graph_limit"))) graphLimit.value = parameters.get("graph_limit");
+if (graphType.value || graphSource.value || graphCorrelation.value || parameters.has("graph_limit")) graphFilterPanel.open = true;
 const eventId = parameters.get("event_id");
 const correlationId = parameters.get("correlation_id");
 if (eventId) openTrace("event_id", eventId).catch(showError);
 else if (correlationId) openTrace("correlation_id", correlationId).catch(showError);
 else openLatest().catch(showError);
-if (parameters.get("view") === "graph") setView("graph");
+if (graphMode) setView("graph");
 window.addEventListener("beforeunload", () => {
   closeGraphStream();
   clearLiveState();
