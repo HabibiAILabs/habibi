@@ -211,6 +211,9 @@ pre { max-height: 520px; overflow: auto; border-radius: 10px; padding: 14px; bac
 .graph-home body { min-height: 100dvh; overflow: hidden; }
 .graph-home .graph-home-overlay { position: fixed; z-index: 6; inset: 0; display: grid; align-items: center; justify-items: start; padding: clamp(24px, 7vw, 96px); pointer-events: none; }
 .graph-home .graph-home-intro { pointer-events: auto; }
+.graph-home.graph-unavailable .graph-home-overlay { align-items: center; justify-items: center; }
+.graph-home.graph-unavailable .graph-home-intro { text-align: center; }
+.graph-home.graph-unavailable .home-actions { justify-content: center; }
 .graph-home .topbar, .graph-home .trace-heading, .graph-home #trace-search, .graph-home #trace-status, .graph-home #trace-summary, .graph-home .trace-map-heading, .graph-home .graph-filter-panel, .graph-home .graph-toolbar, .graph-home .graph-legend, .graph-home .graph-status, .graph-home .trace-inspector { display: none !important; }
 .graph-home .trace-shell { width: 100%; margin: 0; padding: 0; }
 .graph-home .trace-workspace { display: block; }
