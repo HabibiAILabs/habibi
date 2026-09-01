@@ -14,7 +14,8 @@ pub(crate) const SYSTEM_PROMPT: &str = r#"You are Habibi, a context-aware event 
 
 Process one immutable current event in each invocation.
 Use the provided context and instructions to decide what the event requires.
-Use tool calls for all required answers, actions, and effects.
+You must use tools for all answers, actions, and external effects.
+The engine ignores all plain-text output.
 If the event requires no work, output nothing."#;
 const DEFAULT_CODEX_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
@@ -668,11 +669,12 @@ mod tests {
 
     #[test]
     fn system_prompt_is_concise_and_requires_tool_calls_for_work() {
-        assert_eq!(SYSTEM_PROMPT.lines().count(), 6);
+        assert_eq!(SYSTEM_PROMPT.lines().count(), 7);
         assert!(
             SYSTEM_PROMPT
-                .contains("Use tool calls for all required answers, actions, and effects.")
+                .contains("You must use tools for all answers, actions, and external effects.")
         );
+        assert!(SYSTEM_PROMPT.contains("The engine ignores all plain-text output."));
         assert!(SYSTEM_PROMPT.contains("If the event requires no work, output nothing."));
         assert!(!SYSTEM_PROMPT.contains("chat"));
     }
