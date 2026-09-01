@@ -302,7 +302,7 @@ fn hasher_writer<'a>(hasher: &'a mut Sha256) -> impl Write + 'a {
 
 pub const SEMANTIC_TOOL_LIMIT: usize = 50;
 pub const USED_TOOL_LIMIT: usize = 50;
-pub const FINAL_TOOL_LIMIT: usize = 50;
+pub const FINAL_TOOL_LIMIT: usize = 20;
 pub const MIN_TOOL_SIMILARITY: f32 = 0.50;
 
 #[derive(Debug, Clone, Serialize)]

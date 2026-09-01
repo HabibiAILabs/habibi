@@ -477,6 +477,9 @@ impl Engine {
             let name_errors = normalize_call_names(&mut response.tool_calls, &surface_definitions);
             let calls = plan_deliveries(response.tool_calls);
             let mut validation_errors = name_errors;
+            if let Some(error) = plain_text_validation_error(&response.content, calls.len()) {
+                validation_errors.push(error);
+            }
             validation_errors.extend(validate_calls(&calls, &catalog)?);
             let estimated_cost = response
                 .usage
@@ -1032,7 +1035,26 @@ fn validate_calls(
     Ok(errors)
 }
 
+fn plain_text_validation_error(
+    content: &str,
+    tool_call_count: usize,
+) -> Option<ToolCallValidationError> {
+    (tool_call_count == 0 && !content.trim().is_empty()).then(|| ToolCallValidationError {
+        call_index: 0,
+        call_id: "assistant-content".into(),
+        tool: String::new(),
+        path: "/content".into(),
+        message: "plain-text output is ignored; return tool calls only, or return no content when no work is required".into(),
+    })
+}
+
 fn validation_feedback(attempt: usize, errors: &[ToolCallValidationError]) -> Value {
+    let plain_text_rejected = errors.iter().any(|error| error.path == "/content");
+    let instruction = if plain_text_rejected {
+        "No actions were executed. Plain-text output is ignored. Return tool calls only, or return no content when no work is required. Fix every other validation error."
+    } else {
+        "No actions were executed. Return the complete corrected action group, fixing every schema error."
+    };
     json!({
         "role": "user",
         "content": [{
@@ -1041,7 +1063,7 @@ fn validation_feedback(attempt: usize, errors: &[ToolCallValidationError]) -> Va
                 "type": "tool_call_validation.failed",
                 "attempt": attempt,
                 "max_retries": MAX_TOOL_CALL_VALIDATION_RETRIES,
-                "instruction": "No actions were executed. Return the complete corrected action group, fixing every schema error.",
+                "instruction": instruction,
                 "errors": errors,
             })).expect("validation feedback is serializable")
         }]
@@ -1307,6 +1329,23 @@ mod tests {
                 .contains("No actions were executed")
         );
         assert_eq!(payload["errors"][0]["tool"], "chat.send_message");
+    }
+
+    #[test]
+    fn plain_text_without_tool_calls_enters_validation_correction() {
+        assert!(plain_text_validation_error("", 0).is_none());
+        assert!(plain_text_validation_error("ignored text", 1).is_none());
+        let error = plain_text_validation_error("ignored text", 0).unwrap();
+        assert_eq!(error.path, "/content");
+        let feedback = validation_feedback(1, &[error]);
+        let payload: Value =
+            serde_json::from_str(feedback["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(
+            payload["instruction"]
+                .as_str()
+                .unwrap()
+                .contains("Plain-text output is ignored")
+        );
     }
 
     #[test]

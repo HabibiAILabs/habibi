@@ -126,7 +126,7 @@ do not enter individually; `actions.completed` exposes those results once, in or
 The completion event is always persisted and is enqueued only when batched results exist. Failed
 results use the selected delivery mode. Tools cannot suppress or terminate result delivery.
 
-For every claimed event, core semantically ranks registered tools from a bounded event/context projection. Tools actually called earlier in the correlation have priority, and semantic matches fill a final maximum of 50 tools. `habibi.tools.search` is indexed like any other tool and uses the same semantic index if selected. Dangerous tools must enforce confirmation and argument policy when executed. Tool definitions and handlers are pinned to one validated catalog
+For every claimed event, core semantically ranks registered tools from a bounded event/context projection. Tools actually called earlier in the correlation have priority, and semantic matches fill a final maximum of 20 tools. `habibi.tools.search` is indexed like any other tool and uses the same semantic index if selected. Dangerous tools must enforce confirmation and argument policy when executed. Tool definitions and handlers are pinned to one validated catalog
 generation for each action group. Tool advertisements, calls, outcomes, schema-token
 estimates, and execution durations are recorded in logs and aggregated at `/stats`.
 
