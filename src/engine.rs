@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::{
     catalog::ModelCatalog,
-    context::{compile_context_items, current_event_input},
+    context::{compile_context, current_event_input, system_context},
     event::{Event, LogEntry},
     model::ModelClient,
     store::SharedEventStore,
@@ -174,27 +174,34 @@ impl Engine {
 
         let catalog = self.tools.catalog()?;
         let context_started = Instant::now();
-        let mut extension_input = Vec::new();
+        let context_tools = self.tools.clone();
+        let context_event = current_event.clone();
+        let context_executions =
+            tokio::task::spawn_blocking(move || context_tools.context_hooks(&context_event))
+                .await
+                .context("context hook task failed")??;
+        let mut context_sections = Vec::new();
         let mut context_hook_count = 0;
-        for execution in self.tools.context_hooks(current_event)? {
+        for execution in context_executions {
             context_hook_count += 1;
             let attempted = execution
                 .contribution
                 .as_ref()
-                .map(|contribution| compile_context_items(&self.store, &contribution.items))
+                .map(compile_context)
                 .transpose();
             let (level, name, payload) = match attempted {
                 Ok(Some(compiled)) => {
-                    extension_input.extend(compiled.input);
+                    context_sections.push((
+                        execution.extension_id.clone(),
+                        execution.hook.clone(),
+                        compiled.content,
+                    ));
                     (
                         "debug",
                         "context.hook.completed",
                         json!({
                             "extension": execution.extension_id, "hook": execution.hook,
                             "duration_ms": execution.duration_ms,
-                            "items_returned": execution.contribution.as_ref().map(|value| value.items.len()).unwrap_or(0),
-                            "source_event_count": compiled.source_event_count,
-                            "duplicate_items_omitted": compiled.duplicate_items_omitted,
                             "rendered_bytes": compiled.rendered_bytes,
                             "estimated_tokens": compiled.estimated_tokens,
                         }),
@@ -266,9 +273,12 @@ impl Engine {
         }
 
         let rendering_started = Instant::now();
-        let retrieval_context = extension_input.clone();
-        let mut input = extension_input;
-        input.push(current_event_input(&self.store, current_event)?);
+        let retrieval_context = context_sections
+            .iter()
+            .map(|(_, _, content)| content.clone())
+            .collect::<Vec<_>>();
+        let input = vec![current_event_input(&self.store, current_event)?];
+        let base_system_context = system_context(&context_sections, &[])?;
         let input_bytes = serde_json::to_vec(&input)?.len();
         let context_log = LogEntry::new(
             "debug",
@@ -279,8 +289,9 @@ impl Engine {
             current_event.correlation_id,
             json!({
                 "current_event_id": current_event.id, "extension_hook_count": context_hook_count,
-                "input": &input, "rendered_bytes": input_bytes,
-                "estimated_tokens": input_bytes.div_ceil(4),
+                "system_context": &base_system_context, "input": &input,
+                "rendered_bytes": input_bytes + base_system_context.len(),
+                "estimated_tokens": (input_bytes + base_system_context.len()).div_ceil(4),
                 "hook_preparation_duration_ms": context_preparation_duration_ms,
                 "rendering_duration_ms": rendering_started.elapsed().as_millis(),
             }),
@@ -418,13 +429,16 @@ impl Engine {
                 })?;
                 return Ok(());
             }
-            input.extend(state.feedback.clone());
             (state.failed_attempts, state.feedback)
         } else {
             (0, Vec::new())
         };
         loop {
-            let request = self.model.request_body(&input, &surface_definitions);
+            let dynamic_system_context =
+                system_context(&context_sections, &validation_feedback_items)?;
+            let request =
+                self.model
+                    .request_body(&dynamic_system_context, &input, &surface_definitions);
             let model_span_id = Uuid::now_v7().to_string();
             let mut started_log = LogEntry::new(
                 "info",
@@ -565,7 +579,6 @@ impl Engine {
                         &validation_log,
                     )
                 })?;
-                input.push(feedback);
                 continue;
             }
 
@@ -944,7 +957,7 @@ struct PlannedCall {
 struct DurableValidationState {
     catalog_generation: String,
     failed_attempts: usize,
-    feedback: Vec<Value>,
+    feedback: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1048,26 +1061,21 @@ fn plain_text_validation_error(
     })
 }
 
-fn validation_feedback(attempt: usize, errors: &[ToolCallValidationError]) -> Value {
+fn validation_feedback(attempt: usize, errors: &[ToolCallValidationError]) -> String {
     let plain_text_rejected = errors.iter().any(|error| error.path == "/content");
     let instruction = if plain_text_rejected {
         "No actions were executed. Plain-text output is ignored. Return tool calls only, or return no content when no work is required. Fix every other validation error."
     } else {
         "No actions were executed. Return the complete corrected action group, fixing every schema error."
     };
-    json!({
-        "role": "user",
-        "content": [{
-            "type": "input_text",
-            "text": serde_json::to_string(&json!({
-                "type": "tool_call_validation.failed",
-                "attempt": attempt,
-                "max_retries": MAX_TOOL_CALL_VALIDATION_RETRIES,
-                "instruction": instruction,
-                "errors": errors,
-            })).expect("validation feedback is serializable")
-        }]
-    })
+    serde_json::to_string(&json!({
+        "type": "tool_call_validation.failed",
+        "attempt": attempt,
+        "max_retries": MAX_TOOL_CALL_VALIDATION_RETRIES,
+        "instruction": instruction,
+        "errors": errors,
+    }))
+    .expect("validation feedback is serializable")
 }
 
 fn plan_deliveries(calls: Vec<ToolCall>) -> Vec<PlannedCall> {
@@ -1318,8 +1326,7 @@ mod tests {
             message: "session_id is required".into(),
         }];
         let feedback = validation_feedback(1, &errors);
-        let payload: Value =
-            serde_json::from_str(feedback["content"][0]["text"].as_str().unwrap()).unwrap();
+        let payload: Value = serde_json::from_str(&feedback).unwrap();
         assert_eq!(payload["type"], "tool_call_validation.failed");
         assert_eq!(payload["attempt"], 1);
         assert!(
@@ -1338,8 +1345,7 @@ mod tests {
         let error = plain_text_validation_error("ignored text", 0).unwrap();
         assert_eq!(error.path, "/content");
         let feedback = validation_feedback(1, &[error]);
-        let payload: Value =
-            serde_json::from_str(feedback["content"][0]["text"].as_str().unwrap()).unwrap();
+        let payload: Value = serde_json::from_str(&feedback).unwrap();
         assert!(
             payload["instruction"]
                 .as_str()

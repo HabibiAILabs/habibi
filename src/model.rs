@@ -233,14 +233,20 @@ impl ModelClient {
         Ok(())
     }
 
-    pub fn request_body(&self, input: &[Value], tools: &[ToolDefinition]) -> Value {
+    pub fn request_body(
+        &self,
+        dynamic_system_context: &str,
+        input: &[Value],
+        tools: &[ToolDefinition],
+    ) -> Value {
+        let system = format!("{SYSTEM_PROMPT}{dynamic_system_context}");
         match self.config.provider {
-            ModelProvider::OpenAiCodex => self.codex_request_body(input, tools),
-            ModelProvider::Ollama => self.ollama_request_body(input, tools),
+            ModelProvider::OpenAiCodex => self.codex_request_body(&system, input, tools),
+            ModelProvider::Ollama => self.ollama_request_body(&system, input, tools),
         }
     }
 
-    fn codex_request_body(&self, input: &[Value], tools: &[ToolDefinition]) -> Value {
+    fn codex_request_body(&self, system: &str, input: &[Value], tools: &[ToolDefinition]) -> Value {
         let tools = tools
             .iter()
             .map(|tool| {
@@ -254,7 +260,7 @@ impl ModelClient {
             "model": self.config.model,
             "store": false,
             "stream": true,
-            "instructions": SYSTEM_PROMPT,
+            "instructions": system,
             "input": input,
             "text": { "verbosity": "low" },
             "include": ["reasoning.encrypted_content"],
@@ -270,8 +276,13 @@ impl ModelClient {
         body
     }
 
-    fn ollama_request_body(&self, input: &[Value], tools: &[ToolDefinition]) -> Value {
-        let mut messages = vec![json!({ "role": "system", "content": SYSTEM_PROMPT })];
+    fn ollama_request_body(
+        &self,
+        system: &str,
+        input: &[Value],
+        tools: &[ToolDefinition],
+    ) -> Value {
+        let mut messages = vec![json!({ "role": "system", "content": system })];
         messages.extend(input.iter().map(ollama_message));
         let tools = tools
             .iter()
@@ -693,6 +704,7 @@ mod tests {
         )
         .unwrap();
         let body = client.request_body(
+            "\n\n<context>reference</context>",
             &[json!({
                 "role": "user",
                 "content": [{ "type": "input_text", "text": "hello" }]
@@ -704,6 +716,13 @@ mod tests {
             }],
         );
         assert_eq!(body["messages"][0]["role"], "system");
+        assert!(
+            body["messages"][0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("<context>reference</context>")
+        );
+        assert_eq!(body["messages"].as_array().unwrap().len(), 2);
         assert_eq!(body["messages"][1]["content"], "hello");
         assert_eq!(body["tools"][0]["function"]["name"], "chat__send_message");
         assert_eq!(body["think"], "medium");

@@ -22,8 +22,8 @@
 
 Habibi is a local, event-sourced AI runtime built around one continuous conversation.
 There are no core sessions: every incoming event joins one durable history. Each model invocation
-processes one current event; extensions may add their own event or message projections through
-measured context hooks.
+processes one current event as the invocation's sole user message; extensions add formatted,
+measured context sections to the system message.
 
 Habibi's core provides:
 
@@ -199,7 +199,7 @@ Every completed invocation stores its exact catalog entry and rates, so later re
 rewrite historical estimates. See [`docs/model-catalog.md`](docs/model-catalog.md) for the format
 and refresh semantics.
 
-For each event, Habibi embeds a bounded event/context projection and selects semantically matching registered tools. Tools actually called earlier in the correlation have priority; semantic matches fill a final surface of at most 20 exact-name-deduplicated tools. `habibi.tools.search` is an ordinary indexed tool and uses the same semantic index when selected. Built-in tools can get/query events or logs, create semantic links between events, and traverse those links. Exact embedding model identity, query hash, scores, ranks, reasons, limits, schema size, and catalog generation remain in `tool.surface.prepared` logs.
+For each event, Habibi embeds a bounded event/context projection and selects semantically matching registered tools. Tools actually called earlier in the correlation have priority; semantic matches fill a final surface of at most 12 exact-name-deduplicated tools. `habibi.tools.search` is an ordinary indexed tool and uses the same semantic index when selected. Built-in tools can get/query events or logs, create semantic links between events, and traverse those links. Exact embedding model identity, query hash, scores, ranks, reasons, limits, schema size, and catalog generation remain in `tool.surface.prepared` logs.
 
 ## Chat API
 

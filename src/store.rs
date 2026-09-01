@@ -20,6 +20,13 @@ pub struct StoredToolEmbedding {
     pub vector: Vec<f32>,
 }
 
+#[derive(Debug, Clone)]
+pub struct EventEmbeddingCandidate {
+    pub event: StoredEvent,
+    pub document_sha256: Option<String>,
+    pub vector: Option<Vec<f32>>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct InboxItem {
     pub event: StoredEvent,
@@ -158,7 +165,7 @@ pub struct EventStore {
     connection: Connection,
 }
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 impl EventStore {
     pub fn open(path: &str) -> Result<Self> {
@@ -326,7 +333,19 @@ impl EventStore {
                  PRIMARY KEY (catalog_generation, tool_name)
              );
 
-             PRAGMA user_version = 3;"
+             CREATE TABLE IF NOT EXISTS event_embeddings (
+                 event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                 embedding_model TEXT NOT NULL,
+                 embedding_revision TEXT NOT NULL,
+                 dimensions INTEGER NOT NULL,
+                 document_sha256 TEXT NOT NULL,
+                 vector BLOB NOT NULL,
+                 PRIMARY KEY (event_id, embedding_model, embedding_revision)
+             );
+             CREATE INDEX IF NOT EXISTS event_embeddings_by_model
+                 ON event_embeddings(embedding_model, embedding_revision, dimensions, event_id);
+
+             PRAGMA user_version = 4;"
         )?;
 
         Ok(Self { connection })
@@ -1068,6 +1087,109 @@ impl EventStore {
                     .and_then(serde_json::Value::as_bool)
                     .unwrap_or(true),
                 event.id.to_string()
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn event_embedding_candidates(
+        &self,
+        before_sequence: i64,
+        limit: usize,
+        embedding_model: &str,
+        embedding_revision: &str,
+        dimensions: usize,
+    ) -> Result<Vec<EventEmbeddingCandidate>> {
+        let mut statement = self.connection.prepare(
+            "SELECT e.sequence, e.id, e.event_type, e.source, e.occurred_at,
+                    e.causation_id, e.correlation_id, e.payload,
+                    x.document_sha256, x.vector
+             FROM events e
+             LEFT JOIN event_embeddings x
+               ON x.event_id = e.id AND x.embedding_model = ?1
+              AND x.embedding_revision = ?2 AND x.dimensions = ?3
+             WHERE e.sequence < ?4
+             ORDER BY e.sequence DESC
+             LIMIT ?5",
+        )?;
+        let rows = statement
+            .query_map(
+                params![
+                    embedding_model,
+                    embedding_revision,
+                    dimensions as i64,
+                    before_sequence,
+                    limit as i64
+                ],
+                |row| {
+                    Ok((
+                        (
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, Option<String>>(5)?,
+                            row.get::<_, String>(6)?,
+                            row.get::<_, String>(7)?,
+                        ),
+                        row.get::<_, Option<String>>(8)?,
+                        row.get::<_, Option<Vec<u8>>>(9)?,
+                    ))
+                },
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(|(parts, document_sha256, bytes)| {
+                let vector = bytes.and_then(|bytes| {
+                    (bytes.len() == dimensions * 4).then(|| {
+                        bytes
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
+                            .map(|chunk| f32::from_le_bytes(*chunk))
+                            .collect::<Vec<_>>()
+                    })
+                });
+                Ok(EventEmbeddingCandidate {
+                    event: stored_event_from_parts(parts)?,
+                    document_sha256,
+                    vector,
+                })
+            })
+            .collect()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn save_event_embedding(
+        &self,
+        event_id: Uuid,
+        document_sha256: &str,
+        embedding_model: &str,
+        embedding_revision: &str,
+        dimensions: usize,
+        vector: &[f32],
+    ) -> Result<()> {
+        ensure!(
+            vector.len() == dimensions,
+            "embedding dimensions do not match"
+        );
+        let bytes = vector
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        self.connection.execute(
+            "INSERT OR REPLACE INTO event_embeddings (
+                event_id, embedding_model, embedding_revision, dimensions,
+                document_sha256, vector
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                event_id.to_string(),
+                embedding_model,
+                embedding_revision,
+                dimensions as i64,
+                document_sha256,
+                bytes
             ],
         )?;
         Ok(())

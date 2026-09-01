@@ -200,7 +200,7 @@ impl ToolRuntime {
         &self,
         catalog: Arc<ToolCatalog>,
         event: &Event,
-        compiled_context: &[Value],
+        compiled_context: &[String],
     ) -> Result<ToolSelection> {
         let query = event_tool_query(event, compiled_context);
         let query_sha256 = format!("{:x}", Sha256::digest(query.as_bytes()));

@@ -1,0 +1,9 @@
+id = "memory"
+name = "Memory"
+version = "0.1.0"
+description = "Adds relevant durable events to model context."
+api_version = 3
+
+[capabilities]
+events = true
+context = true

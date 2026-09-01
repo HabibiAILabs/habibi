@@ -23,6 +23,7 @@ use crate::process::{ProcessHost, ProcessRequest};
 
 use crate::{
     context::ContextContribution,
+    embedding::EventEmbeddingIndex,
     event::Event,
     filesystem::{
         FilesystemHost, MoveRequest, PatchRequest, PathRequest, SearchRequest, WriteRequest,
@@ -127,6 +128,25 @@ fn default_query_limit() -> usize {
     100
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticEventQuery {
+    text: String,
+    before_sequence: i64,
+    #[serde(default = "default_semantic_event_limit")]
+    limit: usize,
+    #[serde(default = "default_semantic_event_similarity")]
+    minimum_similarity: f32,
+}
+
+fn default_semantic_event_limit() -> usize {
+    crate::embedding::SEMANTIC_EVENT_LIMIT
+}
+
+fn default_semantic_event_similarity() -> f32 {
+    crate::embedding::MIN_EVENT_SIMILARITY
+}
+
 struct RegisteredTool {
     definition: ToolDefinition,
     handler: RegistryKey,
@@ -145,6 +165,8 @@ pub struct ContextHookExecution {
     pub contribution: Option<ContextContribution>,
     pub error: Option<String>,
 }
+
+type SharedEventEmbeddingIndex = Arc<RwLock<Option<Arc<EventEmbeddingIndex>>>>;
 
 struct RegisteredRoute {
     method: String,
@@ -177,6 +199,14 @@ pub struct LoadedExtension {
 
 impl LoadedExtension {
     pub(crate) fn load(directory: &Path, store: SharedEventStore) -> Result<Self> {
+        Self::load_with_embeddings(directory, store, Arc::new(RwLock::new(None)))
+    }
+
+    fn load_with_embeddings(
+        directory: &Path,
+        store: SharedEventStore,
+        event_embeddings: SharedEventEmbeddingIndex,
+    ) -> Result<Self> {
         let manifest_path = directory.join("extension.toml");
         let manifest_source = fs::read_to_string(&manifest_path)
             .with_context(|| format!("failed to read {}", manifest_path.display()))?;
@@ -250,12 +280,24 @@ impl LoadedExtension {
                 Ok(table)
             })?,
         )?;
+        let json_api = lua.create_table()?;
+        json_api.set(
+            "encode",
+            lua.create_function(|lua, value: LuaValue| {
+                let value: Value = lua.from_value(value)?;
+                serde_json::to_string(&value).map_err(mlua::Error::external)
+            })?,
+        )?;
+        habibi.set("json", json_api)?;
 
         if manifest.capabilities.kv {
             habibi.set("kv", create_kv_api(&lua, &manifest.id, store.clone())?)?;
         }
         if manifest.capabilities.events {
-            habibi.set("events", create_events_api(&lua, store.clone())?)?;
+            habibi.set(
+                "events",
+                create_events_api(&lua, store.clone(), event_embeddings)?,
+            )?;
         }
         if let Some(host) = &filesystem_host {
             habibi.set("files", create_files_api(&lua, host.clone())?)?;
@@ -482,7 +524,7 @@ impl LoadedExtension {
             })();
             let (contribution, error) = match attempted {
                 Ok(contribution) => (Some(contribution), None),
-                Err(error) => (None, Some(error.to_string())),
+                Err(error) => (None, Some(format!("{error:#}"))),
             };
             executions.push(ContextHookExecution {
                 extension_id: self.manifest.id.clone(),
@@ -638,12 +680,14 @@ impl LoadedExtension {
 pub struct ExtensionManager {
     directory: PathBuf,
     store: SharedEventStore,
+    event_embeddings: SharedEventEmbeddingIndex,
     extensions: RwLock<HashMap<String, Arc<LoadedExtension>>>,
 }
 
 impl ExtensionManager {
     pub fn load(directory: &Path, store: SharedEventStore) -> Result<Self> {
         let mut extensions = HashMap::new();
+        let event_embeddings = Arc::new(RwLock::new(None));
         if !directory.exists() {
             fs::create_dir_all(directory)?;
         }
@@ -658,7 +702,11 @@ impl ExtensionManager {
             {
                 continue;
             }
-            let extension = Arc::new(LoadedExtension::load(&path, store.clone())?);
+            let extension = Arc::new(LoadedExtension::load_with_embeddings(
+                &path,
+                store.clone(),
+                event_embeddings.clone(),
+            )?);
             if extensions
                 .insert(extension.manifest.id.clone(), extension)
                 .is_some()
@@ -669,8 +717,17 @@ impl ExtensionManager {
         Ok(Self {
             directory: directory.to_owned(),
             store,
+            event_embeddings,
             extensions: RwLock::new(extensions),
         })
+    }
+
+    pub fn set_event_embedding_index(&self, index: Arc<EventEmbeddingIndex>) -> Result<()> {
+        *self
+            .event_embeddings
+            .write()
+            .map_err(|_| anyhow::anyhow!("event embedding index lock poisoned"))? = Some(index);
+        Ok(())
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<LoadedExtension>> {
@@ -678,9 +735,10 @@ impl ExtensionManager {
     }
 
     pub fn reload(&self, id: &str) -> Result<Arc<LoadedExtension>> {
-        let candidate = Arc::new(LoadedExtension::load(
+        let candidate = Arc::new(LoadedExtension::load_with_embeddings(
             &self.directory.join(id),
             self.store.clone(),
+            self.event_embeddings.clone(),
         )?);
         if candidate.manifest.id != id {
             bail!("installed extension manifest id does not match directory '{id}'");
@@ -1121,8 +1179,44 @@ fn create_kv_api(
     Ok(kv)
 }
 
-fn create_events_api(lua: &Lua, store: SharedEventStore) -> mlua::Result<mlua::Table> {
+fn create_events_api(
+    lua: &Lua,
+    store: SharedEventStore,
+    event_embeddings: SharedEventEmbeddingIndex,
+) -> mlua::Result<mlua::Table> {
     let events = lua.create_table()?;
+    let get_store = store.clone();
+    events.set(
+        "get",
+        lua.create_function(move |lua, event_id: String| {
+            let value = get_store
+                .lock()
+                .map_err(|_| mlua::Error::external("event store lock poisoned"))?
+                .get_event(Some(&event_id), None)
+                .map_err(mlua::Error::external)?;
+            lua.to_value(&value)
+        })?,
+    )?;
+    events.set(
+        "semantic",
+        lua.create_function(move |lua, query: LuaValue| {
+            let query: SemanticEventQuery = lua.from_value(query)?;
+            let index = event_embeddings
+                .read()
+                .map_err(|_| mlua::Error::external("event embedding index lock poisoned"))?
+                .clone()
+                .ok_or_else(|| mlua::Error::external("semantic event index is unavailable"))?;
+            let matches = index
+                .search(
+                    &query.text,
+                    query.before_sequence,
+                    query.limit,
+                    query.minimum_similarity,
+                )
+                .map_err(mlua::Error::external)?;
+            lua.to_value(&matches)
+        })?,
+    )?;
     events.set(
         "query",
         lua.create_function(move |lua, query: LuaValue| {
@@ -1288,11 +1382,17 @@ fn validate_unique_hooks(extension_id: &str, kind: &str, hooks: &[RegisteredHook
 }
 
 fn validate_manifest(manifest: &ExtensionManifest) -> Result<()> {
-    if manifest.api_version != 2 {
+    if !matches!(manifest.api_version, 2 | 3) {
         bail!(
             "extension '{}' uses unsupported API version {}",
             manifest.id,
             manifest.api_version
+        );
+    }
+    if manifest.capabilities.context && manifest.api_version != 3 {
+        bail!(
+            "extension '{}' must use API version 3 for formatted context hooks",
+            manifest.id
         );
     }
     if manifest.id == "habibi" {
@@ -1542,18 +1642,56 @@ mod tests {
     }
 
     #[test]
+    fn context_hooks_can_get_events_by_id() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("extension.toml"),
+            "id = \"example\"\nname = \"Example\"\nversion = \"1.0.0\"\napi_version = 3\n[capabilities]\ncontext = true\nevents = true\n",
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("extension.lua"),
+            "habibi.context.register(\"retrieve\", function(trigger)\n  local event = habibi.events.get(trigger.causation_id)\n  return { content = habibi.json.encode(event) }\nend)\n",
+        )
+        .unwrap();
+        let store = EventStore::open(":memory:").unwrap().shared();
+        let parent = Event::new(
+            "test.parent",
+            "test",
+            uuid::Uuid::now_v7(),
+            None,
+            serde_json::json!({}),
+        );
+        store.lock().unwrap().append(&parent).unwrap();
+        let extension = LoadedExtension::load(directory.path(), store).unwrap();
+        let trigger = Event::new(
+            "test.trigger",
+            "test",
+            parent.correlation_id,
+            Some(parent.id),
+            serde_json::json!({}),
+        );
+        let contribution = extension.run_context_hooks(&trigger).unwrap()[0]
+            .contribution
+            .clone()
+            .unwrap();
+        assert!(contribution.content.contains(&parent.id.to_string()));
+        assert!(contribution.content.contains("test.parent"));
+    }
+
+    #[test]
     fn context_hooks_are_ordered_and_fail_independently() {
         let directory = tempfile::tempdir().unwrap();
         fs::write(
             directory.path().join("extension.toml"),
-            "id = \"example\"\nname = \"Example\"\nversion = \"1.0.0\"\napi_version = 2\n[capabilities]\ncontext = true\n",
+            "id = \"example\"\nname = \"Example\"\nversion = \"1.0.0\"\napi_version = 3\n[capabilities]\ncontext = true\n",
         )
         .unwrap();
         fs::write(
             directory.path().join("extension.lua"),
             concat!(
                 "habibi.context.register(\"z-failing\", function() error(\"boom\") end)\n",
-                "habibi.context.register(\"a-good\", function() return { items = habibi.array({}) } end)\n",
+                "habibi.context.register(\"a-good\", function() return { content = \"\" } end)\n",
             ),
         )
         .unwrap();

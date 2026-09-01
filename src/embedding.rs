@@ -302,8 +302,11 @@ fn hasher_writer<'a>(hasher: &'a mut Sha256) -> impl Write + 'a {
 
 pub const SEMANTIC_TOOL_LIMIT: usize = 50;
 pub const USED_TOOL_LIMIT: usize = 50;
-pub const FINAL_TOOL_LIMIT: usize = 20;
+pub const FINAL_TOOL_LIMIT: usize = 12;
 pub const MIN_TOOL_SIMILARITY: f32 = 0.50;
+pub const SEMANTIC_EVENT_LIMIT: usize = 20;
+pub const SEMANTIC_EVENT_CANDIDATE_LIMIT: usize = 10_000;
+pub const MIN_EVENT_SIMILARITY: f32 = 0.50;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SemanticToolMatch {
@@ -321,6 +324,146 @@ struct IndexedTool {
 #[derive(Default)]
 struct IndexState {
     catalogs: std::collections::HashMap<String, Vec<IndexedTool>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SemanticEventMatch {
+    pub event: crate::event::StoredEvent,
+    pub score: f32,
+    pub rank: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SemanticEventSearchResult {
+    pub embedding_model: String,
+    pub embedding_revision: String,
+    pub candidates_scanned: usize,
+    pub matches: Vec<SemanticEventMatch>,
+}
+
+pub struct EventEmbeddingIndex {
+    embedder: std::sync::Arc<dyn Embedder>,
+    store: SharedEventStore,
+}
+
+impl EventEmbeddingIndex {
+    pub fn new(embedder: std::sync::Arc<dyn Embedder>, store: SharedEventStore) -> Self {
+        Self { embedder, store }
+    }
+
+    pub fn search(
+        &self,
+        text: &str,
+        before_sequence: i64,
+        limit: usize,
+        minimum_similarity: f32,
+    ) -> Result<SemanticEventSearchResult> {
+        ensure!(
+            text.len() <= EVENT_TOOL_QUERY_BYTES,
+            "semantic event query exceeds 16 KiB"
+        );
+        ensure!(
+            minimum_similarity.is_finite(),
+            "minimum similarity must be finite"
+        );
+        let limit = limit.clamp(1, SEMANTIC_EVENT_LIMIT);
+        let mut candidates = self
+            .store
+            .lock()
+            .map_err(|_| anyhow::anyhow!("event store lock poisoned"))?
+            .event_embedding_candidates(
+                before_sequence,
+                SEMANTIC_EVENT_CANDIDATE_LIMIT,
+                self.embedder.model_id(),
+                self.embedder.revision(),
+                self.embedder.dimensions(),
+            )?;
+        let candidates_scanned = candidates.len();
+        let documents = candidates
+            .iter()
+            .map(|candidate| {
+                let document = canonical_event_text(&candidate.event.event);
+                let hash = format!("{:x}", Sha256::digest(document.as_bytes()));
+                (document, hash)
+            })
+            .collect::<Vec<_>>();
+        let missing_documents = candidates
+            .iter()
+            .zip(&documents)
+            .filter(|(candidate, (_, hash))| {
+                candidate.vector.is_none()
+                    || candidate.document_sha256.as_deref() != Some(hash.as_str())
+            })
+            .map(|(_, (document, _))| document.clone())
+            .collect::<Vec<_>>();
+        let mut generated = if missing_documents.is_empty() {
+            Vec::new()
+        } else {
+            self.embedder.embed(&missing_documents)?
+        }
+        .into_iter();
+        for (candidate, (_, hash)) in candidates.iter_mut().zip(&documents) {
+            if candidate.vector.is_none()
+                || candidate.document_sha256.as_deref() != Some(hash.as_str())
+            {
+                let vector = generated
+                    .next()
+                    .context("embedding model omitted an event vector")?;
+                self.store
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("event store lock poisoned"))?
+                    .save_event_embedding(
+                        candidate.event.event.id,
+                        hash,
+                        self.embedder.model_id(),
+                        self.embedder.revision(),
+                        self.embedder.dimensions(),
+                        &vector,
+                    )?;
+                candidate.document_sha256 = Some(hash.clone());
+                candidate.vector = Some(vector);
+            }
+        }
+        ensure!(
+            generated.next().is_none(),
+            "embedding model returned too many event vectors"
+        );
+        let query = self
+            .embedder
+            .embed(&[format!("{EMBEDDING_QUERY_PREFIX}{text}")])?
+            .into_iter()
+            .next()
+            .context("embedding model omitted the event query vector")?;
+        let mut matches = candidates
+            .into_iter()
+            .filter_map(|candidate| {
+                let score = normalized_dot(&query, candidate.vector.as_ref()?).ok()?;
+                (score >= minimum_similarity).then_some((candidate.event, score))
+            })
+            .collect::<Vec<_>>();
+        matches.sort_by(|(left, left_score), (right, right_score)| {
+            right_score
+                .total_cmp(left_score)
+                .then_with(|| right.sequence.cmp(&left.sequence))
+                .then_with(|| left.event.id.cmp(&right.event.id))
+        });
+        let matches = matches
+            .into_iter()
+            .take(limit)
+            .enumerate()
+            .map(|(index, (event, score))| SemanticEventMatch {
+                event,
+                score,
+                rank: index + 1,
+            })
+            .collect();
+        Ok(SemanticEventSearchResult {
+            embedding_model: self.embedder.model_id().to_owned(),
+            embedding_revision: self.embedder.revision().to_owned(),
+            candidates_scanned,
+            matches,
+        })
+    }
 }
 
 pub struct ToolEmbeddingIndex {
@@ -587,21 +730,24 @@ const EVENT_TOOL_QUERY_BYTES: usize = 16 * 1024;
 const EVENT_TOOL_QUERY_NODES: usize = 2_048;
 const EVENT_TOOL_QUERY_PATH_BYTES: usize = 512;
 
-pub fn event_tool_query(event: &Event, compiled_context: &[serde_json::Value]) -> String {
+pub fn canonical_event_text(event: &Event) -> String {
+    event_tool_query(event, &[])
+}
+
+pub fn event_tool_query(event: &Event, compiled_context: &[String]) -> String {
     let mut output = String::with_capacity(EVENT_TOOL_QUERY_BYTES);
     append_bounded_line(&mut output, "Event type", &event.event_type);
     append_bounded_line(&mut output, "Event source", &event.source);
     let mut remaining_nodes = EVENT_TOOL_QUERY_NODES;
     collect_scalar_text("payload", &event.payload, &mut output, &mut remaining_nodes);
     for (index, value) in compiled_context.iter().enumerate() {
-        if output.len() == EVENT_TOOL_QUERY_BYTES || remaining_nodes == 0 {
+        if output.len() == EVENT_TOOL_QUERY_BYTES {
             break;
         }
-        collect_scalar_text(
+        append_bounded_line(
+            &mut output,
             &bounded_path("context", &index.to_string()),
             value,
-            &mut output,
-            &mut remaining_nodes,
         );
     }
     output
@@ -861,13 +1007,10 @@ mod tests {
             None,
             serde_json::json!({ "empty": vec![serde_json::Value::Null; 100_000] }),
         );
-        let query = event_tool_query(
-            &event,
-            &[serde_json::json!({ "content": "must not traverse past the node budget" })],
-        );
+        let query = event_tool_query(&event, &["formatted extension context".into()]);
         assert!(query.len() <= EVENT_TOOL_QUERY_BYTES);
         assert!(query.starts_with("Event type: example.created\nEvent source: extension:example"));
-        assert!(!query.contains("must not traverse"));
+        assert!(query.contains("formatted extension context"));
     }
 
     #[test]
@@ -886,13 +1029,57 @@ mod tests {
             None,
             serde_json::Value::Object(wide),
         );
-        let query = event_tool_query(
-            &event,
-            &[serde_json::json!({ "content": "must not traverse a wide object" })],
-        );
+        let query = event_tool_query(&event, &["formatted extension context".into()]);
         assert!(query.len() <= EVENT_TOOL_QUERY_BYTES);
         assert!(query.starts_with("Event type: example.created\nEvent source: extension:example"));
-        assert!(!query.contains("must not traverse"));
+        assert!(query.contains("formatted extension context"));
+    }
+
+    #[test]
+    fn semantic_event_search_is_bounded_before_sequence_and_persistent() {
+        let store = crate::store::EventStore::open(":memory:").unwrap().shared();
+        let file = Event::new(
+            "workspace.file.observed",
+            "test",
+            Uuid::now_v7(),
+            None,
+            serde_json::json!({ "content": "important file notes" }),
+        );
+        let process = Event::new(
+            "process.completed",
+            "test",
+            file.correlation_id,
+            None,
+            serde_json::json!({ "content": "process output" }),
+        );
+        let trigger = Event::new(
+            "test.query",
+            "test",
+            file.correlation_id,
+            None,
+            serde_json::json!({ "content": "workspace question" }),
+        );
+        let before_sequence = {
+            let locked = store.lock().unwrap();
+            locked.append(&file).unwrap();
+            locked.append(&process).unwrap();
+            locked.append(&trigger).unwrap()
+        };
+        let embedder = std::sync::Arc::new(FakeEmbedder::new());
+        let index = EventEmbeddingIndex::new(embedder.clone(), store);
+        let first = index
+            .search("workspace file", before_sequence, 20, 0.60)
+            .unwrap();
+        assert_eq!(first.matches.len(), 1);
+        assert_eq!(first.matches[0].event.event.id, file.id);
+        assert_eq!(first.embedding_model, "fake");
+        assert_eq!(first.candidates_scanned, 2);
+        assert_eq!(embedder.calls.load(std::sync::atomic::Ordering::Relaxed), 3);
+        let second = index
+            .search("workspace file", before_sequence, 20, 0.60)
+            .unwrap();
+        assert_eq!(second.matches[0].event.event.id, file.id);
+        assert_eq!(embedder.calls.load(std::sync::atomic::Ordering::Relaxed), 4);
     }
 
     #[test]

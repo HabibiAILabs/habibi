@@ -118,6 +118,10 @@ async fn main() -> Result<()> {
             .await
             .context("embedding model initialization task failed")??,
     );
+    extensions.set_event_embedding_index(Arc::new(embedding::EventEmbeddingIndex::new(
+        embedder.clone(),
+        store.clone(),
+    )))?;
     let tools = Arc::new(ToolRuntime::new(
         store.clone(),
         extensions.clone(),

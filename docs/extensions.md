@@ -1,7 +1,7 @@
 # Habibi extensions
 
 Extensions are versioned Lua packages installed beneath `HABIBI_EXTENSIONS_DIR`. Each extension
-has its own HTTP namespace and KV namespace. API version 2 provides typed context hooks
+has its own HTTP namespace and KV namespace. API version 3 provides formatted context hooks
 while remaining deliberately small and synchronous.
 
 Install from a local package or Git repository:
@@ -36,7 +36,7 @@ id = "example"
 name = "Example"
 version = "0.1.0"
 description = "What this extension adds to Habibi."
-api_version = 2
+api_version = 3
 
 [capabilities]
 web = true
@@ -54,7 +54,7 @@ static_dir = "web"
 ```
 
 Capabilities are optional and default to false. An extension receives only the corresponding
-host APIs. Lua runs without the `io`, `os`, `package`, or `debug` standard libraries. API version 2
+host APIs. Lua runs without the `io`, `os`, `package`, or `debug` standard libraries. API version 3
 uses `habibi.context.register` for per-event model context. Tool discovery is core-owned semantic retrieval over registered tool descriptions and input fields.
 
 Habibi also infers provided features from registered routes, static web content, and context hooks. These details appear at `/extensions`, where extensions can be enabled
@@ -126,7 +126,7 @@ do not enter individually; `actions.completed` exposes those results once, in or
 The completion event is always persisted and is enqueued only when batched results exist. Failed
 results use the selected delivery mode. Tools cannot suppress or terminate result delivery.
 
-For every claimed event, core semantically ranks registered tools from a bounded event/context projection. Tools actually called earlier in the correlation have priority, and semantic matches fill a final maximum of 20 tools. `habibi.tools.search` is indexed like any other tool and uses the same semantic index if selected. Dangerous tools must enforce confirmation and argument policy when executed. Tool definitions and handlers are pinned to one validated catalog
+For every claimed event, core semantically ranks registered tools from a bounded event/context projection. Tools actually called earlier in the correlation have priority, and semantic matches fill a final maximum of 12 tools. `habibi.tools.search` is indexed like any other tool and uses the same semantic index if selected. Dangerous tools must enforce confirmation and argument policy when executed. Tool definitions and handlers are pinned to one validated catalog
 generation for each action group. Tool advertisements, calls, outcomes, schema-token
 estimates, and execution durations are recorded in logs and aggregated at `/stats`.
 
@@ -149,37 +149,33 @@ When `emit` is present, core validates the namespace, appends the event and dura
 SQLite transaction, normalizes the response to `202 Accepted`, and adds `event_id`, `correlation_id`,
 and `sequence`. If `idempotency_key` is present, the JSON response and acceptance metadata are stored
 atomically; retries of the same extension/type/key return the original acceptance without a new event. Model processing continues independently of the request. Core supplies a stable system
-prompt and the immutable claimed event. An extension with the `context` capability may contribute its
-own event references or message projections. Both hook families run anew for every claimed event,
-deterministically by extension ID and hook name; failed hooks are logged and skipped without stopping peers.
+prompt and the immutable claimed event. An extension with the `context` capability may contribute
+formatted context text. Hooks run anew for every claimed event, deterministically by extension ID
+and hook name; failed hooks are logged and skipped without stopping peers.
 
 ```lua
 habibi.context.register("example-history", function(trigger)
-  if not trigger.payload.content then return { items = habibi.array({}) } end
+  if not trigger.payload.content then return { content = "" } end
   return {
-    items = habibi.array({{
-      type = "message",
-      role = "user",
-      content = trigger.payload.content,
-      source_event_id = trigger.id
-    }})
+    content = "Relevant example data:\n" .. habibi.json.encode(trigger.payload)
   }
 end)
 ```
 
-An event contribution uses `{ type = "event", event_id = "..." }`. Message roles are `user` or
-`assistant` and every message must reference an existing immutable source event. Extensions can
-select and render only their own returned contributions; they cannot rewrite core input or another
-extension's contribution. Exact duplicate projections from one hook are omitted, conflicting
-projections are rejected, and each hook is bounded to 500 items and 2 MiB of rendered input.
-User-visible effects are performed by model tools.
+A context hook returns one extension-formatted UTF-8 `content` string. Core does not assign message
+roles, fetch source events, or reinterpret its contents. It places every non-empty contribution in
+a labeled, delimited section of the invocation's system message. The one immutable current event is
+the invocation's only user message. Each hook and the combined extension context are bounded to
+2 MiB. User-visible effects are performed by model tools.
 
 All action requests, results, tool effects, batch barriers, and operational logs share the
 trigger's correlation ID and are connected through causation IDs and result references.
 
-## Event queries
+## Event access
 
 ```lua
+local parent = habibi.events.get(trigger.causation_id)
+
 local recent = habibi.events.query({
   prefix = "example.",
   limit = 100
@@ -189,11 +185,24 @@ local messages = habibi.events.query({
   type = "example.message.created",
   limit = 100
 })
+
+local related = habibi.events.semantic({
+  text = "formatted retrieval query",
+  before_sequence = trigger_sequence,
+  limit = 20,
+  minimum_similarity = 0.50
+})
 ```
 
-Results are chronological and include `sequence` plus the complete core event envelope.
-Each query is capped at 1,000 events. Use `before_sequence` or `after_sequence` to paginate
-without relying on timestamps.
+`get` returns the complete stored event or `nil` when the ID does not exist. Query results are
+chronological and include `sequence` plus the complete core event envelope. Each query is capped
+at 1,000 events. Use `before_sequence` or `after_sequence` to paginate without relying on timestamps.
+
+`semantic` uses the explicitly installed pinned local embedding model, scans at most the newest
+10,000 prior events, and returns model/revision metadata, candidate count, and at most 20
+`{ event, score, rank }` entries in `matches`. It performs no download
+or network request. Queries are bounded to 16 KiB. Extensions remain responsible for merging,
+filtering, ordering, deduplicating, and formatting results.
 
 ## KV storage
 
