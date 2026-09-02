@@ -229,13 +229,6 @@ GET    /extensions/chat/api/preferences
 PUT    /extensions/chat/api/preferences
 ```
 
-## Workspace extension
-
-The official Workspace extension provides searchable tools for bounded directory listing, UTF-8
-reads, literal search, checked atomic writes and patches, one-level directory creation, same-root
-moves, and nonrecursive deletion. Configure granted roots on `/extensions`; no grant means no
-filesystem access. Tool search advertises Workspace definitions only when they are relevant.
-
 ## Process extension
 
 The Linux-only Process extension runs exact user-granted native executables without implicit shell
