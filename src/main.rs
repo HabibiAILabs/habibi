@@ -13,7 +13,6 @@ mod process;
 mod scanner;
 mod search;
 mod store;
-mod studio;
 mod tool;
 mod web;
 
@@ -28,7 +27,6 @@ use extension::ExtensionManager;
 use installer::{ExtensionInstaller, SourceOptions};
 use model::{ModelClient, ModelConfig};
 use store::EventStore;
-use studio::StudioService;
 use tool::ToolRuntime;
 use web::WebState;
 
@@ -106,13 +104,6 @@ async fn main() -> Result<()> {
     model.verify().await?;
     let store = EventStore::open(&database_path)?.shared();
     let extensions = Arc::new(ExtensionManager::load(&extensions_path, store.clone())?);
-    let studio = Arc::new(StudioService::from_env()?);
-    let extensions_root = extensions_path.canonicalize()?;
-    if studio.root_path().starts_with(&extensions_root)
-        || extensions_root.starts_with(studio.root_path())
-    {
-        bail!("extension drafts and installed extensions must use separate directories");
-    }
     let embedder = Arc::new(
         tokio::task::spawn_blocking(LocalEmbedder::load_default)
             .await
@@ -136,10 +127,6 @@ async fn main() -> Result<()> {
         engine: engine.clone(),
         store,
         extensions_dir: extensions_path.clone(),
-        studio,
-        local_admin: bind_address
-            .parse::<std::net::SocketAddr>()
-            .is_ok_and(|address| address.ip().is_loopback()),
         catalog_mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
     };
     let app = web::router(state.clone());
@@ -155,7 +142,6 @@ async fn main() -> Result<()> {
         state.engine.model_provider(),
         state.engine.model_name()
     );
-    println!("Extension drafts: {}", state.studio.root_path().display());
     println!("Web: http://{bind_address}");
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);

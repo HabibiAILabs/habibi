@@ -200,9 +200,8 @@ impl ToolRuntime {
         &self,
         catalog: Arc<ToolCatalog>,
         event: &Event,
-        compiled_context: &[String],
     ) -> Result<ToolSelection> {
-        let query = event_tool_query(event, compiled_context);
+        let query = event_tool_query(event, &[]);
         let query_sha256 = format!("{:x}", Sha256::digest(query.as_bytes()));
         let embeddings = self.embeddings.clone();
         let generation = catalog.generation.clone();

@@ -273,10 +273,6 @@ impl Engine {
         }
 
         let rendering_started = Instant::now();
-        let retrieval_context = context_sections
-            .iter()
-            .map(|(_, _, content)| content.clone())
-            .collect::<Vec<_>>();
         let input = vec![current_event_input(&self.store, current_event)?];
         let base_system_context = system_context(&context_sections, &[])?;
         let input_bytes = serde_json::to_vec(&input)?.len();
@@ -302,12 +298,12 @@ impl Engine {
         let surface_started = Instant::now();
         let selection = match self
             .tools
-            .select_tools(catalog.clone(), current_event, &retrieval_context)
+            .select_tools(catalog.clone(), current_event)
             .await
         {
             Ok(selection) => selection,
             Err(error) => {
-                let query = crate::embedding::event_tool_query(current_event, &retrieval_context);
+                let query = crate::embedding::event_tool_query(current_event, &[]);
                 self.log(LogEntry::new(
                     "error",
                     "tool",

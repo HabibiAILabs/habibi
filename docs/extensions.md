@@ -46,7 +46,6 @@ tools = true
 context = true
 filesystem = true
 process = true
-studio = true
 search = true
 
 [web]
@@ -126,7 +125,7 @@ do not enter individually; `actions.completed` exposes those results once, in or
 The completion event is always persisted and is enqueued only when batched results exist. Failed
 results use the selected delivery mode. Tools cannot suppress or terminate result delivery.
 
-For every claimed event, core semantically ranks registered tools from a bounded event/context projection. Tools actually called earlier in the correlation have priority, and semantic matches fill a final maximum of 12 tools. `habibi.tools.search` is indexed like any other tool and uses the same semantic index if selected. Dangerous tools must enforce confirmation and argument policy when executed. Tool definitions and handlers are pinned to one validated catalog
+For every claimed event, core semantically ranks registered tools from a bounded current-event projection. Extension-provided system context does not alter tool retrieval. Tools actually called earlier in the correlation have priority, and semantic matches fill a final maximum of 12 tools. `habibi.tools.search` is indexed like any other tool and uses the same semantic index if selected. Dangerous tools must enforce confirmation and argument policy when executed. Tool definitions and handlers are pinned to one validated catalog
 generation for each action group. Tool advertisements, calls, outcomes, schema-token
 estimates, and execution durations are recorded in logs and aggregated at `/stats`.
 
@@ -289,21 +288,6 @@ Bubblewrap or delegated cgroup v2 is unavailable.
 Core emits a host-authored `process.execution.completed` effect with executable alias/hash, cwd,
 outcome, duration, exit status, and byte counts—never argv or output. Tool arguments, returned output,
 action results, and exact model logs remain durable. Do not use process tools for secrets.
-
-## Extension Studio
-
-The `studio` capability exposes `habibi.studio` only inside registered tool actions. It operates on
-the host-owned `HABIBI_EXTENSION_DRAFTS_DIR`; extensions cannot select another root. APIs are
-`list`, `create`, `list_files`, `read`, `write`, `mkdir`, and `validate`. Paths are draft IDs plus
-relative `.toml`, `.lua`, `.html`, `.css`, `.js`, `.md`, or `.json` paths. Existing-file writes
-require the SHA-256 returned by `read`; symbolic links, binary files, traversal, recursive directory
-creation, deletion, and model-triggered installation are excluded.
-
-The loopback-only `/studio` UI uses the same service. Validation computes the package hash, runs the
-security/privacy scanner, and loads the extension against an isolated in-memory store. Installation
-requires an explicit browser confirmation for that exact passing hash, reruns the normal installer
-pipeline, rejects drift, and preserves normal version-bump and rollback rules. Installed extensions
-remain fully trusted local code.
 
 ## Web search
 

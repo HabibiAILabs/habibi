@@ -116,7 +116,9 @@ mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.
 mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir workspace
 mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir process
 mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir git
-mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir extension-studio
+mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir memory
+mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir habibi-docs
+mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir soul
 mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir web-search
 mise exec -- cargo run
 ```
@@ -128,7 +130,9 @@ mise exec -- cargo run -- install ../habibi-extensions --subdir chat
 mise exec -- cargo run -- install ../habibi-extensions --subdir workspace
 mise exec -- cargo run -- install ../habibi-extensions --subdir process
 mise exec -- cargo run -- install ../habibi-extensions --subdir git
-mise exec -- cargo run -- install ../habibi-extensions --subdir extension-studio
+mise exec -- cargo run -- install ../habibi-extensions --subdir memory
+mise exec -- cargo run -- install ../habibi-extensions --subdir habibi-docs
+mise exec -- cargo run -- install ../habibi-extensions --subdir soul
 mise exec -- cargo run -- install ../habibi-extensions --subdir web-search
 ```
 
@@ -199,7 +203,7 @@ Every completed invocation stores its exact catalog entry and rates, so later re
 rewrite historical estimates. See [`docs/model-catalog.md`](docs/model-catalog.md) for the format
 and refresh semantics.
 
-For each event, Habibi embeds a bounded event/context projection and selects semantically matching registered tools. Tools actually called earlier in the correlation have priority; semantic matches fill a final surface of at most 12 exact-name-deduplicated tools. `habibi.tools.search` is an ordinary indexed tool and uses the same semantic index when selected. Built-in tools can get/query events or logs, create semantic links between events, and traverse those links. Exact embedding model identity, query hash, scores, ranks, reasons, limits, schema size, and catalog generation remain in `tool.surface.prepared` logs.
+For each event, Habibi embeds a bounded current-event projection and selects semantically matching registered tools. Tools actually called earlier in the correlation have priority; semantic matches fill a final surface of at most 12 exact-name-deduplicated tools. `habibi.tools.search` is an ordinary indexed tool and uses the same semantic index when selected. Built-in tools can get/query events or logs, create semantic links between events, and traverse those links. Exact embedding model identity, query hash, scores, ranks, reasons, limits, schema size, and catalog generation remain in `tool.surface.prepared` logs.
 
 ## Chat API
 
@@ -244,11 +248,16 @@ Git `0.1` provides read-only status, diff, log, and show tools through Process. 
 be an exact filesystem grant and is mounted read-only. Git hooks, fsmonitor, pagers, optional locks,
 external diff/textconv, signatures, networking, and submodule traversal are disabled where relevant.
 
-## Extension Studio
+## Habibi documentation extension
 
-`/studio` provides a host-owned draft editor and review flow. Drafts use relative allowlisted text
-paths, SHA-256 checked edits, the real package scanner and isolated runtime validation, and explicit
-hash-bound installation. Model tools can create/edit/validate drafts but cannot install them.
+Habibi Docs provides semantically selected, model-callable runtime and extension-development
+documentation. It explains events, context hooks, tools, routes, KV, capabilities, installation,
+and security without placing the complete guide in every invocation.
+
+## Soul extension
+
+Soul stores a user-authored personality prompt in its private KV namespace and contributes it as
+system context. Its web interface is available from the extension's **Open** link.
 
 ## Web Search extension
 

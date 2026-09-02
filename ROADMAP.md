@@ -21,7 +21,6 @@ Habibi is a local, event-sourced AI runtime. This roadmap describes direction ra
 - User-managed filesystem root grants, capability-confined reads/search, checked atomic mutations, and host-authored effects
 - Linux sandboxed process execution with exact executable grants, sealed images, Bubblewrap isolation, cgroup termination, and host-authored effects
 - Read-only Git inspection through exact read-only repository sandboxes
-- Extension Studio draft editing, scanning, isolated validation, and explicit hash-bound installation
 - Bounded Brave/SearXNG web search with host-only credentials and citable normalized results
 
 ## Near term
@@ -38,7 +37,6 @@ Habibi is a local, event-sourced AI runtime. This roadmap describes direction ra
 
 ### Extension authoring
 
-- Extension Studio for drafting and reviewing generated files
 - Scoped draft read/write tools for Habibi
 - Shared authoring guide exposed to the model
 - Isolated extension test harness with fixture events and temporary KV storage

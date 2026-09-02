@@ -50,18 +50,6 @@ pub struct InstallMetadata {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct DraftValidation {
-    pub id: String,
-    pub name: String,
-    pub version: String,
-    pub capabilities: ExtensionCapabilities,
-    pub content_hash: String,
-    pub security_scan: ScanReport,
-    pub valid: bool,
-    pub validation_error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
 pub struct UpdateStatus {
     pub id: String,
     pub installed_version: String,
@@ -105,86 +93,6 @@ struct PreparedPackage {
 impl ExtensionInstaller {
     pub fn new(extensions_dir: PathBuf) -> Self {
         Self { extensions_dir }
-    }
-
-    pub fn inspect_local(&self, source: &Path) -> Result<DraftValidation> {
-        let source = source
-            .canonicalize()
-            .with_context(|| format!("extension draft '{}' does not exist", source.display()))?;
-        let source_text = source
-            .to_str()
-            .context("extension draft path is not UTF-8")?;
-        let temporary = tempfile::tempdir()?;
-        match ExtensionInstaller::new(temporary.path().join("extensions"))
-            .install(source_text, SourceOptions::default())
-        {
-            Ok(installed) => Ok(DraftValidation {
-                id: installed.id,
-                name: installed.name,
-                version: installed.version,
-                capabilities: installed.capabilities,
-                content_hash: installed.content_hash,
-                security_scan: installed
-                    .security_scan
-                    .context("validated package did not retain its scan report")?,
-                valid: true,
-                validation_error: None,
-            }),
-            Err(validation_error) => {
-                let manifest = read_manifest(&source)?;
-                let security_scan = scan_extension(&source, &manifest)?;
-                Ok(DraftValidation {
-                    id: manifest.id,
-                    name: manifest.name,
-                    version: manifest.version,
-                    capabilities: manifest.capabilities,
-                    content_hash: hash_package(&source)?,
-                    security_scan,
-                    valid: false,
-                    validation_error: Some(validation_error.to_string()),
-                })
-            }
-        }
-    }
-
-    pub fn install_local_if_hash(
-        &self,
-        source: &Path,
-        expected_hash: &str,
-    ) -> Result<InstallMetadata> {
-        let _operation_lock = self.operation_lock()?;
-        let source = source
-            .canonicalize()
-            .with_context(|| format!("extension draft '{}' does not exist", source.display()))?;
-        let package = self.prepare(
-            source
-                .to_str()
-                .context("extension draft path is not UTF-8")?,
-            SourceOptions::default(),
-        )?;
-        if package.content_hash != expected_hash {
-            bail!("extension draft changed after validation; validate it again");
-        }
-        let destination = self.extensions_dir.join(&package.manifest.id);
-        if !destination.exists() {
-            return self.commit(package);
-        }
-        let installed = self.metadata(&package.manifest.id)?;
-        let ExtensionSource::Local { path } = &installed.source else {
-            bail!("refusing to replace a non-draft installation from Extension Studio");
-        };
-        if Path::new(path).canonicalize()? != source {
-            bail!("refusing to replace an extension installed from another local source");
-        }
-        let installed_version = Version::parse(&installed.version)?;
-        let available_version = Version::parse(&package.manifest.version)?;
-        if available_version <= installed_version {
-            bail!(
-                "draft version must increase above installed version {}",
-                installed_version
-            );
-        }
-        self.commit(package)
     }
 
     pub fn install(&self, source: &str, options: SourceOptions) -> Result<InstallMetadata> {
@@ -276,22 +184,6 @@ impl ExtensionInstaller {
         file.try_lock_exclusive()
             .context("another extension installation or update is already running")?;
         Ok(OperationLock(file))
-    }
-
-    pub fn remove_installed(&self, extension_id: &str) -> Result<()> {
-        if extension_id.is_empty()
-            || extension_id
-                .bytes()
-                .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_'))
-        {
-            bail!("invalid extension id");
-        }
-        let _operation_lock = self.operation_lock()?;
-        let path = self.extensions_dir.join(extension_id);
-        if path.exists() {
-            fs::remove_dir_all(path)?;
-        }
-        Ok(())
     }
 
     pub fn metadata(&self, extension_id: &str) -> Result<InstallMetadata> {
@@ -663,34 +555,6 @@ mod tests {
             panic!("expected local source")
         };
         assert!(path.ends_with("packages/example"));
-    }
-
-    #[test]
-    fn studio_install_is_bound_to_a_validated_hash() {
-        let source = tempfile::tempdir().unwrap();
-        package(source.path(), "1.0.0");
-        let destination = tempfile::tempdir().unwrap();
-        let installer = ExtensionInstaller::new(destination.path().join("extensions"));
-        let validation = installer.inspect_local(source.path()).unwrap();
-        assert!(validation.valid);
-        fs::write(source.path().join("README.md"), "changed after review").unwrap();
-        assert!(
-            installer
-                .install_local_if_hash(source.path(), &validation.content_hash)
-                .unwrap_err()
-                .to_string()
-                .contains("changed after validation")
-        );
-        let validation = installer.inspect_local(source.path()).unwrap();
-        installer
-            .install_local_if_hash(source.path(), &validation.content_hash)
-            .unwrap();
-        package(source.path(), "1.1.0");
-        let validation = installer.inspect_local(source.path()).unwrap();
-        let updated = installer
-            .install_local_if_hash(source.path(), &validation.content_hash)
-            .unwrap();
-        assert_eq!(updated.version, "1.1.0");
     }
 
     #[test]

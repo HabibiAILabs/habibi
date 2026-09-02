@@ -112,9 +112,7 @@ def run_task(task: dict, args: argparse.Namespace, run_root: Path) -> dict:
     task_id = task["task_id"]
     task_root = run_root / task_id
     workspace = task_root / "workspace"
-    drafts = task_root / "drafts"
     workspace.mkdir(parents=True, exist_ok=True)
-    drafts.mkdir(parents=True, exist_ok=True)
     attachments = copy_attachments(task, args.dataset, workspace)
     port = args.port
     base_url = f"http://127.0.0.1:{port}"
@@ -125,7 +123,6 @@ def run_task(task: dict, args: argparse.Namespace, run_root: Path) -> dict:
             "HABIBI_BIND": f"127.0.0.1:{port}",
             "HABIBI_DB": str(task_root / "habibi.db"),
             "HABIBI_EXTENSIONS_DIR": str((ROOT / "extensions").resolve()),
-            "HABIBI_EXTENSION_DRAFTS_DIR": str(drafts.resolve()),
         }
     )
     started = time.monotonic()

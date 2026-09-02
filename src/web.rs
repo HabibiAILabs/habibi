@@ -30,10 +30,6 @@ use crate::{
     filesystem::normalize_grant_roots,
     installer::ExtensionInstaller,
     store::{EventStore, EventTailQuery, SharedEventStore, StoreEventQuery, StoreLogQuery},
-    studio::{
-        CreateDraftDirectoryRequest, CreateDraftRequest, DraftFileRequest, StudioService,
-        WriteDraftFileRequest,
-    },
 };
 
 #[derive(Clone)]
@@ -42,8 +38,6 @@ pub struct WebState {
     pub engine: Arc<Engine>,
     pub store: SharedEventStore,
     pub extensions_dir: PathBuf,
-    pub studio: Arc<StudioService>,
-    pub local_admin: bool,
     pub catalog_mutation_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -55,7 +49,6 @@ pub fn router(state: WebState) -> Router {
         .route("/logs", get(logs_page))
         .route("/trace", get(trace_page))
         .route("/stats", get(stats_page))
-        .route("/studio", get(studio_page))
         .route("/assets/habibi-logo.svg", get(logo_asset))
         .route("/assets/core.css", get(core_css_asset))
         .route("/assets/extensions.js", get(extensions_js_asset))
@@ -71,7 +64,6 @@ pub fn router(state: WebState) -> Router {
         .route("/assets/vgpu-LICENSE.txt", get(vgpu_license_asset))
         .route("/assets/markdown.js", get(markdown_js_asset))
         .route("/assets/stats.js", get(stats_js_asset))
-        .route("/assets/studio.js", get(studio_js_asset))
         .route("/api/events", get(list_events))
         .route("/api/event-graph", get(event_graph))
         .route("/api/events/stream", get(stream_events))
@@ -81,21 +73,6 @@ pub fn router(state: WebState) -> Router {
         .route("/api/models", get(models))
         .route("/api/models/refresh", post(refresh_models))
         .route("/api/extensions", get(list_extensions))
-        .route("/api/studio/drafts", get(list_drafts).post(create_draft))
-        .route("/api/studio/drafts/{draft_id}/files", get(list_draft_files))
-        .route(
-            "/api/studio/drafts/{draft_id}/files/{*path}",
-            get(read_draft_file).put(write_draft_file),
-        )
-        .route(
-            "/api/studio/drafts/{draft_id}/directories",
-            post(create_draft_directory),
-        )
-        .route(
-            "/api/studio/drafts/{draft_id}/validate",
-            post(validate_draft),
-        )
-        .route("/api/studio/drafts/{draft_id}/install", post(install_draft))
         .route("/api/extensions/{extension_id}", put(toggle_extension))
         .route(
             "/api/extensions/{extension_id}/grants",
@@ -143,10 +120,6 @@ async fn stats_page() -> Response {
     html_response(include_str!("../web/stats.html"))
 }
 
-async fn studio_page() -> Response {
-    html_response(include_str!("../web/studio.html"))
-}
-
 async fn logo_asset() -> Response {
     asset_response("image/svg+xml", include_bytes!("../web/habibi-logo.svg"))
 }
@@ -166,13 +139,6 @@ async fn stats_js_asset() -> Response {
     asset_response(
         "text/javascript; charset=utf-8",
         include_bytes!("../web/stats.js"),
-    )
-}
-
-async fn studio_js_asset() -> Response {
-    asset_response(
-        "text/javascript; charset=utf-8",
-        include_bytes!("../web/studio.js"),
     )
 }
 
@@ -906,256 +872,6 @@ async fn toggle_extension(
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": error.to_string() }),
         ),
-    }
-}
-
-fn require_local_studio(state: &WebState) -> Option<Response> {
-    (!state.local_admin).then(|| {
-        json_response(
-            StatusCode::FORBIDDEN,
-            json!({ "error": "Extension Studio is available only on a loopback bind" }),
-        )
-    })
-}
-
-async fn list_drafts(State(state): State<WebState>) -> Response {
-    if let Some(response) = require_local_studio(&state) {
-        return response;
-    }
-    let studio = state.studio.clone();
-    match tokio::task::spawn_blocking(move || studio.list_drafts()).await {
-        Ok(Ok(drafts)) => json_response(StatusCode::OK, json!(drafts)),
-        Ok(Err(error)) => json_response(
-            StatusCode::BAD_REQUEST,
-            json!({ "error": error.to_string() }),
-        ),
-        Err(error) => json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({ "error": error.to_string() }),
-        ),
-    }
-}
-
-async fn create_draft(
-    State(state): State<WebState>,
-    axum::Json(request): axum::Json<CreateDraftRequest>,
-) -> Response {
-    if let Some(response) = require_local_studio(&state) {
-        return response;
-    }
-    let studio = state.studio.clone();
-    match tokio::task::spawn_blocking(move || studio.create_draft(request)).await {
-        Ok(Ok(draft)) => json_response(StatusCode::CREATED, json!(draft)),
-        Ok(Err(error)) => json_response(
-            StatusCode::BAD_REQUEST,
-            json!({ "error": error.to_string() }),
-        ),
-        Err(error) => json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({ "error": error.to_string() }),
-        ),
-    }
-}
-
-async fn list_draft_files(State(state): State<WebState>, Path(draft_id): Path<String>) -> Response {
-    if let Some(response) = require_local_studio(&state) {
-        return response;
-    }
-    let studio = state.studio.clone();
-    match tokio::task::spawn_blocking(move || studio.list_files(&draft_id)).await {
-        Ok(Ok(files)) => json_response(StatusCode::OK, json!({ "files": files })),
-        Ok(Err(error)) => json_response(
-            StatusCode::BAD_REQUEST,
-            json!({ "error": error.to_string() }),
-        ),
-        Err(error) => json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({ "error": error.to_string() }),
-        ),
-    }
-}
-
-async fn read_draft_file(
-    State(state): State<WebState>,
-    Path((draft_id, path)): Path<(String, String)>,
-) -> Response {
-    if let Some(response) = require_local_studio(&state) {
-        return response;
-    }
-    let studio = state.studio.clone();
-    match tokio::task::spawn_blocking(move || studio.read_file(DraftFileRequest { draft_id, path }))
-        .await
-    {
-        Ok(Ok(file)) => json_response(StatusCode::OK, json!(file)),
-        Ok(Err(error)) => json_response(
-            StatusCode::BAD_REQUEST,
-            json!({ "error": error.to_string() }),
-        ),
-        Err(error) => json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({ "error": error.to_string() }),
-        ),
-    }
-}
-
-#[derive(Deserialize)]
-struct DraftWriteBody {
-    content: String,
-    expected_sha256: Option<String>,
-}
-
-async fn write_draft_file(
-    State(state): State<WebState>,
-    Path((draft_id, path)): Path<(String, String)>,
-    axum::Json(body): axum::Json<DraftWriteBody>,
-) -> Response {
-    if let Some(response) = require_local_studio(&state) {
-        return response;
-    }
-    let studio = state.studio.clone();
-    match tokio::task::spawn_blocking(move || {
-        studio.write_file(WriteDraftFileRequest {
-            draft_id,
-            path,
-            content: body.content,
-            expected_sha256: body.expected_sha256,
-        })
-    })
-    .await
-    {
-        Ok(Ok(file)) => json_response(StatusCode::OK, json!(file)),
-        Ok(Err(error)) => json_response(
-            StatusCode::BAD_REQUEST,
-            json!({ "error": error.to_string() }),
-        ),
-        Err(error) => json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({ "error": error.to_string() }),
-        ),
-    }
-}
-
-#[derive(Deserialize)]
-struct DraftDirectoryBody {
-    path: String,
-}
-
-async fn create_draft_directory(
-    State(state): State<WebState>,
-    Path(draft_id): Path<String>,
-    axum::Json(body): axum::Json<DraftDirectoryBody>,
-) -> Response {
-    if let Some(response) = require_local_studio(&state) {
-        return response;
-    }
-    let studio = state.studio.clone();
-    match tokio::task::spawn_blocking(move || {
-        studio.create_directory(CreateDraftDirectoryRequest {
-            draft_id,
-            path: body.path,
-        })
-    })
-    .await
-    {
-        Ok(Ok(())) => json_response(StatusCode::CREATED, json!({ "created": true })),
-        Ok(Err(error)) => json_response(
-            StatusCode::BAD_REQUEST,
-            json!({ "error": error.to_string() }),
-        ),
-        Err(error) => json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({ "error": error.to_string() }),
-        ),
-    }
-}
-
-async fn validate_draft(State(state): State<WebState>, Path(draft_id): Path<String>) -> Response {
-    if let Some(response) = require_local_studio(&state) {
-        return response;
-    }
-    let studio = state.studio.clone();
-    match tokio::task::spawn_blocking(move || studio.validate(&draft_id)).await {
-        Ok(Ok(validation)) => json_response(StatusCode::OK, json!(validation)),
-        Ok(Err(error)) => json_response(
-            StatusCode::BAD_REQUEST,
-            json!({ "error": error.to_string() }),
-        ),
-        Err(error) => json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({ "error": error.to_string() }),
-        ),
-    }
-}
-
-#[derive(Deserialize)]
-struct DraftInstallBody {
-    approved_hash: String,
-}
-
-async fn install_draft(
-    State(state): State<WebState>,
-    Path(draft_id): Path<String>,
-    axum::Json(body): axum::Json<DraftInstallBody>,
-) -> Response {
-    if let Some(response) = require_local_studio(&state) {
-        return response;
-    }
-    let _catalog_mutation_guard = state.catalog_mutation_lock.lock().await;
-    let draft_path = match state.studio.draft_path(&draft_id) {
-        Ok(path) => path,
-        Err(error) => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({ "error": error.to_string() }),
-            );
-        }
-    };
-    let existed = state.extensions.get(&draft_id).is_some();
-    let extensions_dir = state.extensions_dir.clone();
-    let approved_hash = body.approved_hash;
-    let installed = match tokio::task::spawn_blocking(move || {
-        ExtensionInstaller::new(extensions_dir).install_local_if_hash(&draft_path, &approved_hash)
-    })
-    .await
-    {
-        Ok(Ok(installed)) => installed,
-        Ok(Err(error)) => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({ "error": error.to_string() }),
-            );
-        }
-        Err(error) => {
-            return json_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                json!({ "error": error.to_string() }),
-            );
-        }
-    };
-    match state.extensions.reload(&installed.id) {
-        Ok(_) => json_response(StatusCode::OK, json!({ "installed": installed })),
-        Err(error) => {
-            let extensions_dir = state.extensions_dir.clone();
-            let extension_id = installed.id.clone();
-            let recovery = tokio::task::spawn_blocking(move || {
-                let installer = ExtensionInstaller::new(extensions_dir);
-                if existed {
-                    installer.rollback(&extension_id).map(|_| ())
-                } else {
-                    installer.remove_installed(&extension_id)
-                }
-            })
-            .await;
-            let restored = matches!(recovery, Ok(Ok(())))
-                && (!existed || state.extensions.reload(&installed.id).is_ok());
-            json_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                json!({
-                    "error": format!("installed draft could not be loaded: {error}"),
-                    "rolled_back": restored
-                }),
-            )
-        }
     }
 }
 
