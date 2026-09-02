@@ -16,7 +16,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::store::SharedEventStore;
+use crate::{
+    boundary,
+    store::{BoundaryPolicy, SharedEventStore},
+};
 
 static FILESYSTEM_MUTATION_LOCK: Mutex<()> = Mutex::new(());
 
@@ -147,12 +150,16 @@ impl FilesystemHost {
             .entries()?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         entries.sort_by_key(|entry| entry.file_name());
-        let (_, excludes) = self.boundaries()?;
+        let policy = self.boundaries()?;
         entries
             .into_iter()
             .filter(|entry| {
-                let entry_path = path.join(entry.file_name());
-                !excludes.iter().any(|excluded| excluded == &entry_path)
+                boundary::path_allowed(
+                    &path.join(entry.file_name()),
+                    &policy.directory_includes,
+                    &policy.directory_excludes,
+                    true,
+                )
             })
             .map(|entry| {
                 let file_type = entry.file_type()?;
@@ -309,15 +316,10 @@ impl FilesystemHost {
             .map_err(|_| anyhow::anyhow!("filesystem mutation lock poisoned"))?;
         let from = self.checked_existing(&request.from)?;
         let to = self.checked_new_path(&request.to)?;
-        let (roots, _) = self.boundaries()?;
-        let from_root = containing_root(&from, &roots)?.to_owned();
-        let to_root = containing_root(&to, &roots)?.to_owned();
-        if from_root != to_root {
-            bail!("moves between granted roots are not supported");
-        }
-        let root = Dir::open_ambient_dir(&from_root, ambient_authority())?;
-        let from_relative = from.strip_prefix(&from_root)?;
-        let to_relative = to.strip_prefix(&to_root)?;
+        let root_path = Path::new("/");
+        let root = Dir::open_ambient_dir(root_path, ambient_authority())?;
+        let from_relative = from.strip_prefix(root_path)?;
+        let to_relative = to.strip_prefix(root_path)?;
         let from_path = utf8_path(&from)?;
         rename_without_overwrite(&root, from_relative, to_relative)?;
         let result = MutationResult {
@@ -338,8 +340,15 @@ impl FilesystemHost {
             .lock()
             .map_err(|_| anyhow::anyhow!("filesystem mutation lock poisoned"))?;
         let path = self.checked_existing(&request.path)?;
-        if self.boundaries()?.0.iter().any(|root| root == &path) {
-            bail!("a granted root cannot be deleted");
+        if path == Path::new("/")
+            || self
+                .boundaries()?
+                .directory_includes
+                .iter()
+                .filter(|pattern| !boundary::has_wildcards(pattern))
+                .any(|root| Path::new(root) == path)
+        {
+            bail!("an included boundary root cannot be deleted");
         }
         let metadata = fs::metadata(&path)?;
         let old_sha256 = metadata
@@ -380,8 +389,12 @@ impl FilesystemHost {
             bail!("search path must be a directory");
         }
         let (granted_root, relative) = self.authorized_relative(&root_path)?;
-        let search_root = granted_root.open_dir(&relative)?;
-        let (_, excludes) = self.boundaries()?;
+        let search_root = if relative.as_os_str().is_empty() {
+            granted_root
+        } else {
+            granted_root.open_dir(&relative)?
+        };
+        let policy = self.boundaries()?;
         let limit = request.limit.unwrap_or(50).clamp(1, 200);
         let needle = request.query.to_lowercase();
         let mut queue = VecDeque::from([(search_root, root_path, 0usize)]);
@@ -410,7 +423,12 @@ impl FilesystemHost {
                     continue;
                 }
                 let display_path = display_directory.join(entry.file_name());
-                if excludes.iter().any(|path| display_path.starts_with(path)) {
+                if !boundary::path_allowed(
+                    &display_path,
+                    &policy.directory_includes,
+                    &policy.directory_excludes,
+                    true,
+                ) {
                     continue;
                 }
                 if file_type.is_dir() {
@@ -527,7 +545,7 @@ impl FilesystemHost {
         Ok(())
     }
 
-    fn boundaries(&self) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
+    fn boundaries(&self) -> Result<BoundaryPolicy> {
         let policy = self
             .store
             .lock()
@@ -536,45 +554,48 @@ impl FilesystemHost {
         if policy.directory_includes.is_empty() {
             bail!("the global filesystem boundary includes no directories");
         }
-        for path in policy
+        for pattern in policy
             .directory_includes
             .iter()
             .chain(&policy.directory_excludes)
+            .filter(|pattern| !boundary::has_wildcards(pattern))
         {
-            let metadata = fs::symlink_metadata(path)
-                .with_context(|| format!("boundary directory '{path}' no longer exists"))?;
+            let metadata = fs::symlink_metadata(pattern)
+                .with_context(|| format!("boundary directory '{pattern}' no longer exists"))?;
             if metadata.file_type().is_symlink() || !metadata.is_dir() {
-                bail!("boundary directory '{path}' is no longer a canonical directory");
+                bail!("boundary directory '{pattern}' is no longer a canonical directory");
             }
         }
-        Ok((
-            policy
-                .directory_includes
-                .into_iter()
-                .map(PathBuf::from)
-                .collect(),
-            policy
-                .directory_excludes
-                .into_iter()
-                .map(PathBuf::from)
-                .collect(),
-        ))
+        Ok(policy)
+    }
+
+    fn authorize(&self, path: &Path) -> Result<()> {
+        let policy = self.boundaries()?;
+        if !boundary::path_allowed(
+            path,
+            &policy.directory_includes,
+            &policy.directory_excludes,
+            true,
+        ) {
+            bail!(
+                "path '{}' is outside the global directory boundary",
+                path.display()
+            );
+        }
+        Ok(())
     }
 
     fn authorized_relative(&self, path: &Path) -> Result<(Dir, PathBuf)> {
-        let (roots, excludes) = self.boundaries()?;
-        let root = containing_root(path, &roots)?;
-        reject_excluded(path, &excludes)?;
+        self.authorize(path)?;
+        let root = Path::new("/");
         let directory = Dir::open_ambient_dir(root, ambient_authority())?;
         Ok((directory, path.strip_prefix(root)?.to_owned()))
     }
 
     fn checked_existing(&self, value: &str) -> Result<PathBuf> {
         let path = checked_absolute(value)?;
-        let (roots, excludes) = self.boundaries()?;
-        let root = containing_root(&path, &roots)?;
-        reject_excluded(&path, &excludes)?;
-        reject_symlinks(root, &path)?;
+        self.authorize(&path)?;
+        reject_symlinks(Path::new("/"), &path)?;
         let metadata = fs::metadata(&path)
             .with_context(|| format!("path '{}' does not exist", path.display()))?;
         if !metadata.is_file() && !metadata.is_dir() {
@@ -593,11 +614,9 @@ impl FilesystemHost {
 
     fn checked_write_path(&self, value: &str) -> Result<PathBuf> {
         let path = checked_absolute(value)?;
-        let (roots, excludes) = self.boundaries()?;
-        let root = containing_root(&path, &roots)?;
-        reject_excluded(&path, &excludes)?;
+        self.authorize(&path)?;
         let parent = path.parent().context("file path has no parent")?;
-        reject_symlinks(root, parent)?;
+        reject_symlinks(Path::new("/"), parent)?;
         if !parent.is_dir() {
             bail!("parent directory does not exist");
         }
@@ -620,13 +639,18 @@ impl FilesystemHost {
 
 pub fn normalize_grant_roots(values: &[String]) -> Result<Vec<String>> {
     if values.len() > 32 {
-        bail!("at most 32 directories may be included or excluded");
+        bail!("at most 32 directory patterns may be included or excluded");
     }
-    let mut roots = values
+    let mut patterns = values
         .iter()
         .filter(|value| !value.trim().is_empty())
         .map(|value| {
-            let path = checked_absolute(value.trim())?;
+            let value = value.trim();
+            boundary::validate_pattern(value)?;
+            if boundary::has_wildcards(value) {
+                return Ok(value.to_owned());
+            }
+            let path = checked_absolute(value)?;
             let canonical = fs::canonicalize(&path)
                 .with_context(|| format!("filesystem root '{}' does not exist", path.display()))?;
             if !canonical.is_dir() {
@@ -638,20 +662,9 @@ pub fn normalize_grant_roots(values: &[String]) -> Result<Vec<String>> {
             utf8_path(&canonical)
         })
         .collect::<Result<Vec<_>>>()?;
-    roots.sort();
-    roots.dedup();
-    let paths = roots.iter().map(PathBuf::from).collect::<Vec<_>>();
-    Ok(roots
-        .into_iter()
-        .enumerate()
-        .filter(|(index, root)| {
-            !paths
-                .iter()
-                .enumerate()
-                .any(|(other, parent)| other != *index && Path::new(root).starts_with(parent))
-        })
-        .map(|(_, root)| root)
-        .collect())
+    patterns.sort();
+    patterns.dedup();
+    Ok(patterns)
 }
 
 fn checked_absolute(value: &str) -> Result<PathBuf> {
@@ -666,29 +679,6 @@ fn checked_absolute(value: &str) -> Result<PathBuf> {
         bail!("filesystem paths cannot contain '.' or '..'");
     }
     Ok(path)
-}
-
-fn reject_excluded(path: &Path, excludes: &[PathBuf]) -> Result<()> {
-    if excludes.iter().any(|excluded| path.starts_with(excluded)) {
-        bail!(
-            "path '{}' is inside a globally excluded directory",
-            path.display()
-        );
-    }
-    Ok(())
-}
-
-fn containing_root<'a>(path: &Path, roots: &'a [PathBuf]) -> Result<&'a Path> {
-    roots
-        .iter()
-        .find(|root| path.starts_with(root))
-        .map(PathBuf::as_path)
-        .with_context(|| {
-            format!(
-                "path '{}' is outside the global directory boundary",
-                path.display()
-            )
-        })
 }
 
 fn reject_symlinks(root: &Path, path: &Path) -> Result<()> {

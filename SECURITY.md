@@ -25,8 +25,8 @@ Static scanning cannot prove that an extension is safe or private. It may miss o
 
 ## Global filesystem boundary
 
-Filesystem access is default-deny. Core settings contain global include and exclude lists of existing
-canonical directories; exclusions always win. Every extension declaring `filesystem` shares this
+Filesystem access is default-deny. Core settings contain global include and exclude path patterns.
+The most specific matching rule wins, with includes winning equal-specificity ties. Every extension declaring `filesystem` shares this
 maximum boundary. Host operations reject symbolic links and special files, bound reads/searches,
 serialize mutations, require hashes for existing-file changes, and use atomic replacement. Boundaries
 reduce accidental scope; they do not make trusted extensions hostile-code safe. File contents and
@@ -35,8 +35,8 @@ patch arguments remain present in durable action events and exact model logs.
 ## Process execution
 
 Process execution is Linux-only and default-deny. Core settings contain global include and exclude
-lists of canonical native ELF programs. Extensions may request an approved absolute path or an
-unambiguous basename. Habibi reads the current approved image into sealed memory without a shell,
+patterns for native ELF programs. The same specificity rule applies. Extensions may request an
+unambiguous basename resolved from deterministic approved locations, or an approved absolute path. Habibi reads the current approved image into sealed memory without a shell,
 clears the environment, disables network access, mounts the approved working directory, bounds
 arguments, time, and output, and kills the complete delegated cgroup after every run. The API is
 available only during registered tool actions and fails closed without Bubblewrap or delegated

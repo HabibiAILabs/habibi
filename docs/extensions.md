@@ -249,8 +249,9 @@ as Soul does; configuration controls do not appear inline on extension cards.
 ## Global-boundary filesystem access
 
 The `filesystem` capability exposes `habibi.files`, but grants no paths by itself. Core Settings
-hold global include and exclude lists of existing absolute directories. Every filesystem-capable
-extension shares this maximum boundary, and exclusions always win. Empty includes deny every operation.
+hold global include and exclude absolute path patterns. Every filesystem-capable extension shares
+this maximum boundary. The most specific match wins and includes win equal-specificity ties, allowing
+specific includes to override `*` exclusions. Empty includes deny every operation.
 
 ```lua
 local file = habibi.files.read({ path = "/home/user/project/README.md" })
@@ -270,8 +271,8 @@ by query length, depth, entries, files, bytes, matches, and output preview size.
 
 Creating a file requires a missing destination. Replacing or patching an existing file requires the
 exact SHA-256 returned by `read`; stale writes fail without changing the target. Writes use a synced
-temporary file and atomic rename. Deletes are nonrecursive and cannot delete an included root. Moves
-cannot cross included roots or overwrite intentionally existing destinations.
+temporary file and atomic rename. Deletes are nonrecursive and cannot delete an exact included root. Moves require both paths to be
+allowed, cannot cross filesystems, and never overwrite an existing destination.
 
 Filesystem mutations are serialized within one loaded extension generation. Core—not Lua—records
 host-authored `workspace.*` mutation effects, including when Lua fails after the mutation. Effect
@@ -296,9 +297,10 @@ local outcome = habibi.process.run({
 })
 ```
 
-Users configure global program includes and excludes on the Settings page. Entries are canonical
-native ELF files. A call may use an absolute approved path or a basename that matches exactly one
-included program. Current program bytes are copied into sealed memory before launch. There is no
+Users configure global program include/exclude patterns on the Settings page. Exact entries are
+canonical native ELF files; patterns support `*` and `?`. A basename is accepted only when it resolves
+to one allowed candidate from an explicit entry, a concrete pattern directory, or the fixed system
+locations `/usr/local/bin`, `/usr/bin`, and `/bin` under `*`. Absolute paths remain available. Current program bytes are copied into sealed memory before launch. There is no
 ambient PATH lookup, implicit shell evaluation, script/shebang support, caller environment, stdin,
 detached mode, or network. Approved programs may launch helpers; approving an interpreter or shell
 grants its normal argv authority.

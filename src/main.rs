@@ -1,4 +1,5 @@
 mod auth;
+mod boundary;
 mod catalog;
 mod context;
 mod embedding;

@@ -235,7 +235,7 @@ evaluation. Core resolves a basename only when it identifies one included progra
 verified ELF bytes from sealed memory inside Bubblewrap namespaces, removes network and ambient
 environment access, mounts only the approved working directory, bounds output/time, and kills the
 complete delegated cgroup afterward. Configure directory and program include/exclude lists on
-`/settings`; exclusions win. Arguments and returned output are durable; never use process tools for secrets.
+`/settings`; the most specific wildcard rule wins and includes win ties. Arguments and returned output are durable; never use process tools for secrets.
 
 ## Git extension
 

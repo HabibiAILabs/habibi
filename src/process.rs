@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::store::SharedEventStore;
+use crate::{boundary, store::SharedEventStore};
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const MAX_TIMEOUT_MS: u64 = 120_000;
@@ -197,24 +197,20 @@ impl ProcessHost {
             .lock()
             .map_err(|_| anyhow::anyhow!("event store lock poisoned"))?
             .boundary_policy()?;
-        let includes = policy
-            .directory_includes
-            .iter()
-            .map(PathBuf::from)
-            .collect::<Vec<_>>();
-        let excludes = policy
-            .directory_excludes
-            .iter()
-            .map(PathBuf::from)
-            .collect::<Vec<_>>();
-        if !includes.iter().any(|root| canonical.starts_with(root)) {
+        if !boundary::path_allowed(
+            &canonical,
+            &policy.directory_includes,
+            &policy.directory_excludes,
+            true,
+        ) {
             bail!("process cwd is outside the global directory boundary");
         }
-        if excludes
+        if policy
+            .directory_excludes
             .iter()
-            .any(|path| canonical.starts_with(path) || path.starts_with(&canonical))
+            .any(|pattern| boundary::pattern_may_match_below(pattern, &canonical))
         {
-            bail!("process cwd intersects a globally excluded directory");
+            bail!("process cwd contains a narrower excluded directory pattern");
         }
         let root = canonical.clone();
         let root_handle = File::from(open(
@@ -237,7 +233,13 @@ pub fn normalize_program_paths(requested: &[String]) -> Result<Vec<String>> {
     }
     let mut paths = BTreeSet::new();
     for requested_path in requested {
-        let path = strict_absolute_path(requested_path.trim())?;
+        let requested_path = requested_path.trim();
+        boundary::validate_pattern(requested_path)?;
+        if boundary::has_wildcards(requested_path) {
+            paths.insert(requested_path.to_owned());
+            continue;
+        }
+        let path = strict_absolute_path(requested_path)?;
         let canonical = fs::canonicalize(&path)
             .with_context(|| format!("process program '{}' does not exist", path.display()))?;
         let metadata = fs::symlink_metadata(&canonical)?;
@@ -312,21 +314,43 @@ fn strict_absolute_path(value: &str) -> Result<PathBuf> {
 fn resolve_program(requested: &str, includes: &[String], excludes: &[String]) -> Result<PathBuf> {
     validate_program_request(requested)?;
     let requested_path = Path::new(requested);
-    let matches = includes
-        .iter()
-        .map(PathBuf::from)
-        .filter(|path| {
-            if requested_path.is_absolute() {
-                path == requested_path
-            } else {
-                path.file_name().is_some_and(|name| name == requested)
+    if requested_path.is_absolute() {
+        let canonical = fs::canonicalize(requested_path)
+            .with_context(|| format!("process program '{requested}' does not exist"))?;
+        if boundary::path_allowed(&canonical, includes, excludes, false) {
+            return Ok(canonical);
+        }
+        bail!("process program '{requested}' is outside the global program boundary");
+    }
+    let mut candidates = BTreeSet::new();
+    for pattern in includes {
+        if pattern == "*" {
+            for directory in ["/usr/local/bin", "/usr/bin", "/bin"] {
+                candidates.insert(Path::new(directory).join(requested));
             }
-        })
-        .filter(|path| !excludes.iter().any(|excluded| Path::new(excluded) == path))
+        } else if !boundary::has_wildcards(pattern) {
+            let path = PathBuf::from(pattern);
+            if path.file_name().is_some_and(|name| name == requested) {
+                candidates.insert(path);
+            }
+        } else if let Some(parent) = Path::new(pattern).parent()
+            && !boundary::has_wildcards(&parent.to_string_lossy())
+        {
+            candidates.insert(parent.join(requested));
+        }
+    }
+    let matches = candidates
+        .into_iter()
+        .filter_map(|path| fs::canonicalize(path).ok())
+        .filter(|path| boundary::path_allowed(path, includes, excludes, false))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect::<Vec<_>>();
     match matches.as_slice() {
         [program] => Ok(program.clone()),
-        [] => bail!("process program '{requested}' is outside the global program boundary"),
+        [] => bail!(
+            "process program '{requested}' has no unambiguous match in approved program patterns"
+        ),
         _ => bail!("process program '{requested}' is ambiguous; use its approved absolute path"),
     }
 }
@@ -669,15 +693,24 @@ mod tests {
     }
 
     #[test]
-    fn global_program_exclusions_win_and_names_must_be_unambiguous() {
-        let includes = vec!["/usr/bin/git".into(), "/opt/tools/git".into()];
-        assert!(
-            resolve_program("git", &includes, &[])
-                .unwrap_err()
-                .to_string()
-                .contains("ambiguous")
+    fn global_program_patterns_use_specificity_and_deterministic_names() {
+        let includes = vec!["/usr/bin/git".into()];
+        assert_eq!(
+            resolve_program("git", &["*".into()], &[]).unwrap(),
+            PathBuf::from("/usr/bin/git")
         );
-        assert!(resolve_program("/usr/bin/git", &includes, &["/usr/bin/git".into()]).is_err());
+        assert_eq!(
+            resolve_program("/usr/bin/git", &includes, &["*".into()]).unwrap(),
+            PathBuf::from("/usr/bin/git")
+        );
+        assert!(
+            resolve_program(
+                "/usr/bin/git",
+                &["/usr/bin/g*".into()],
+                &["/usr/bin/git".into()]
+            )
+            .is_err()
+        );
         assert_eq!(
             resolve_program("/usr/bin/git", &includes, &[]).unwrap(),
             PathBuf::from("/usr/bin/git")
