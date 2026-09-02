@@ -8,7 +8,7 @@ Install from a local package or Git repository:
 
 ```sh
 habibi install ./my-extension
-habibi install https://github.com/HabibiAssistant/extensions.git --subdir chat
+habibi install https://github.com/HabibiAILabs/extensions.git --subdir chat
 habibi install https://github.com/example/plugin.git --ref v1.2.0
 habibi update chat
 ```

@@ -17,7 +17,7 @@ Habibi is a local, event-sourced AI runtime. This roadmap describes direction ra
 - Local and Git extension installation with source/revision/version/hash provenance
 - Extension update checks, hot reload, rollback, and management UI
 - Automatic extension security/privacy scanning before installation or update
-- Official chat and scoped Workspace extensions distributed from `HabibiAssistant/extensions`
+- Official extensions distributed from `HabibiAILabs/extensions`
 - User-managed filesystem root grants, capability-confined reads/search, checked atomic mutations, and host-authored effects
 - Linux sandboxed process execution with exact executable grants, sealed images, Bubblewrap isolation, cgroup termination, and host-authored effects
 - Read-only Git inspection through exact read-only repository sandboxes

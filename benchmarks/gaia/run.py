@@ -92,11 +92,6 @@ def copy_attachments(task: dict, dataset: Path, workspace: Path) -> list[Path]:
 
 def configure_tools(base_url: str, workspace: Path, with_process: bool) -> None:
     root = str(workspace.resolve())
-    request_json(
-        f"{base_url}/api/extensions/workspace/grants",
-        "PUT",
-        {"filesystem_roots": [root], "process_executables": {}},
-    )
     if with_process:
         request_json(
             f"{base_url}/api/extensions/process/grants",

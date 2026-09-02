@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/HabibiAssistant/extensions">Official extensions</a>
+  <a href="https://github.com/HabibiAILabs/extensions">Official extensions</a>
   ·
   <a href="docs/extensions.md">Extension authoring</a>
   ·
@@ -114,14 +114,13 @@ Extensions are installed separately from the core runtime. Install the official 
 then start Habibi:
 
 ```sh
-mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir chat
-mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir workspace
-mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir process
-mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir git
-mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir memory
-mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir habibi-docs
-mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir soul
-mise exec -- cargo run -- install https://github.com/HabibiAssistant/extensions.git --subdir web-search
+mise exec -- cargo run -- install https://github.com/HabibiAILabs/extensions.git --subdir chat
+mise exec -- cargo run -- install https://github.com/HabibiAILabs/extensions.git --subdir process
+mise exec -- cargo run -- install https://github.com/HabibiAILabs/extensions.git --subdir git
+mise exec -- cargo run -- install https://github.com/HabibiAILabs/extensions.git --subdir memory
+mise exec -- cargo run -- install https://github.com/HabibiAILabs/extensions.git --subdir habibi-docs
+mise exec -- cargo run -- install https://github.com/HabibiAILabs/extensions.git --subdir soul
+mise exec -- cargo run -- install https://github.com/HabibiAILabs/extensions.git --subdir web-search
 mise exec -- cargo run
 ```
 
@@ -129,7 +128,6 @@ You can also install a local checkout:
 
 ```sh
 mise exec -- cargo run -- install ../habibi-extensions --subdir chat
-mise exec -- cargo run -- install ../habibi-extensions --subdir workspace
 mise exec -- cargo run -- install ../habibi-extensions --subdir process
 mise exec -- cargo run -- install ../habibi-extensions --subdir git
 mise exec -- cargo run -- install ../habibi-extensions --subdir memory
@@ -149,8 +147,7 @@ security boundary. Every install and update is staged, automatically security/pr
 Lua-validated before it can enter the active runtime; blocking findings abort the operation and
 warnings remain visible in installation metadata and the Extensions UI. See [`SECURITY.md`](SECURITY.md)
 for the scanner's coverage and limitations. Chat stores sessions and messages as `chat.*` events
-and keeps UI preferences in its private KV namespace. Workspace remains denied until the user saves
-one or more existing absolute root directories on the Extensions page.
+and keeps UI preferences in its private KV namespace.
 
 ## Events API
 
@@ -210,7 +207,7 @@ For each event, Habibi embeds a bounded current-event projection and selects sem
 ## Chat API
 
 The official chat extension is maintained at
-[`HabibiAssistant/extensions`](https://github.com/HabibiAssistant/extensions/tree/main/chat).
+[`HabibiAILabs/extensions`](https://github.com/HabibiAILabs/extensions/tree/main/chat).
 Its web UI and API are mounted beneath `/extensions/chat/`. Chat `0.3.0` uses accepted producer
 responses, `context.current_event`, and the core SSE stream.
 
