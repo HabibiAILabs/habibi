@@ -89,10 +89,10 @@ Paths cannot escape the configured directory.
 An extension may designate one optional application home page and icon during initialization:
 
 ```lua
-habibi.web.home({ path = "/", icon = "/icon.svg" })
+habibi.web.home({ path = "/", icon = "/icon.svg", title = "Example App" })
 ```
 
-Both paths are extension-relative absolute paths. A registered home appears as an application card
+Both paths are extension-relative absolute paths. `title` optionally gives the app a display name distinct from the extension package name. A registered home appears as an application card
 on Habibi's homepage and as an **Open** action on the Extensions page. Habibi opens it inside the
 shared `/apps/{extension-id}` shell so global navigation remains visible. Extensions are trusted,
 same-origin applications; the shell uses an iframe for layout isolation, not a security boundary.

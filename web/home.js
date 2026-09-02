@@ -18,12 +18,12 @@ function appCard(extension) {
     image.alt = "";
     visual.append(image);
   } else {
-    visual.textContent = initials(extension.name);
+    visual.textContent = initials(extension.app_name || extension.name);
   }
 
   const text = document.createElement("span");
   const name = document.createElement("strong");
-  name.textContent = extension.name;
+  name.textContent = extension.app_name || extension.name;
   const description = document.createElement("small");
   description.textContent = extension.description || "Open extension";
   text.append(name, description);

@@ -174,6 +174,8 @@ struct RegisteredHome {
     path: String,
     #[serde(default)]
     icon: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
 }
 
 struct LuaState {
@@ -345,6 +347,13 @@ impl LoadedExtension {
                     if let Some(icon) = &value.icon {
                         validate_web_path(icon).map_err(mlua::Error::external)?;
                     }
+                    if let Some(title) = &value.title
+                        && (title.trim().is_empty() || title.len() > 120)
+                    {
+                        return Err(mlua::Error::external(
+                            "extension home title must contain 1 to 120 bytes",
+                        ));
+                    }
                     let mut registered = home.lock().map_err(|_| {
                         mlua::Error::external("extension home registry lock poisoned")
                     })?;
@@ -476,12 +485,12 @@ impl LoadedExtension {
         self.enabled.load(Ordering::Acquire)
     }
 
-    pub fn home_registration(&self) -> Option<(String, Option<String>)> {
+    pub fn home_registration(&self) -> Option<(String, Option<String>, Option<String>)> {
         let state = self.state.lock().ok()?;
         state
             .home
             .as_ref()
-            .map(|home| (home.path.clone(), home.icon.clone()))
+            .map(|home| (home.path.clone(), home.icon.clone(), home.title.clone()))
     }
 
     pub fn set_enabled(&self, enabled: bool) -> Result<()> {
@@ -921,12 +930,14 @@ impl ExtensionManager {
                     main_page: home
                         .as_ref()
                         .map(|_| format!("/apps/{}", extension.manifest.id)),
-                    frame_page: home
-                        .as_ref()
-                        .map(|(path, _)| format!("/extensions/{}{}", extension.manifest.id, path)),
-                    icon: home.and_then(|(_, icon)| {
-                        icon.map(|path| format!("/extensions/{}{}", extension.manifest.id, path))
+                    frame_page: home.as_ref().map(|(path, _, _)| {
+                        format!("/extensions/{}{}", extension.manifest.id, path)
                     }),
+                    icon: home.as_ref().and_then(|(_, icon, _)| {
+                        icon.as_ref()
+                            .map(|path| format!("/extensions/{}{}", extension.manifest.id, path))
+                    }),
+                    app_name: home.and_then(|(_, _, title)| title),
                 }
             })
             .collect::<Vec<_>>();
@@ -950,6 +961,7 @@ pub struct ExtensionSummary {
     pub main_page: Option<String>,
     pub frame_page: Option<String>,
     pub icon: Option<String>,
+    pub app_name: Option<String>,
 }
 
 fn create_search_api(lua: &Lua, host: SearchHost) -> mlua::Result<mlua::Table> {
@@ -1414,7 +1426,7 @@ mod tests {
         .unwrap();
         fs::write(
             extension.join("extension.lua"),
-            "habibi.web.home({ path = \"/\", icon = \"/icon.svg\" })\n",
+            "habibi.web.home({ path = \"/\", icon = \"/icon.svg\", title = \"Example App\" })\n",
         )
         .unwrap();
         fs::write(extension.join("web/index.html"), "home").unwrap();
@@ -1422,6 +1434,7 @@ mod tests {
         let store = EventStore::open(":memory:").unwrap().shared();
         let manager = ExtensionManager::load(directory.path(), store).unwrap();
         let summary = manager.summaries().pop().unwrap();
+        assert_eq!(summary.app_name.as_deref(), Some("Example App"));
         assert_eq!(summary.main_page.as_deref(), Some("/apps/example"));
         assert_eq!(summary.frame_page.as_deref(), Some("/extensions/example/"));
         assert_eq!(

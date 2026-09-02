@@ -14,18 +14,19 @@ try {
   const extensions = await response.json();
   const extension = extensions.find(value => value.id === id);
   if (!extension || !extension.enabled || !extension.frame_page) throw new Error("Extension app is unavailable");
-  document.title = `${extension.name} · Habibi`;
-  heading.textContent = extension.name;
+  const appName = extension.app_name || extension.name;
+  document.title = `${appName} · Habibi`;
+  heading.textContent = appName;
   if (extension.icon) {
     const image = document.createElement("img");
     image.src = extension.icon;
     image.alt = "";
     icon.append(image);
   } else {
-    icon.textContent = initials(extension.name);
+    icon.textContent = initials(appName);
   }
   frame.src = extension.frame_page;
-  frame.title = `${extension.name} extension`;
+  frame.title = `${appName} extension`;
   frame.hidden = false;
   status.textContent = "";
 } catch (error) {
