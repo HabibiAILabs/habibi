@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
+    collections::{BTreeSet, HashMap, HashSet, VecDeque},
     convert::Infallible,
     path::PathBuf,
     sync::Arc,
@@ -21,7 +21,7 @@ use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
 #[cfg(target_os = "linux")]
-use crate::process::normalize_executable_grants;
+use crate::process::normalize_program_paths;
 
 use crate::{
     engine::Engine,
@@ -29,7 +29,10 @@ use crate::{
     extension::{ExtensionManager, RequestData, RouteOutcome},
     filesystem::normalize_grant_roots,
     installer::ExtensionInstaller,
-    store::{EventStore, EventTailQuery, SharedEventStore, StoreEventQuery, StoreLogQuery},
+    store::{
+        BoundaryPolicy, EventStore, EventTailQuery, SharedEventStore, StoreEventQuery,
+        StoreLogQuery,
+    },
 };
 
 #[derive(Clone)]
@@ -45,6 +48,15 @@ pub fn router(state: WebState) -> Router {
     Router::new()
         .route("/", get(home_page))
         .route("/extensions", get(extensions_page))
+        .route("/settings", get(settings_page))
+        .route(
+            "/admin/extensions/{extension_id}/kv",
+            get(extension_kv_page),
+        )
+        .route(
+            "/admin/extensions/{extension_id}/config",
+            get(extension_config_page),
+        )
         .route("/apps/{extension_id}", get(extension_app_page))
         .route("/events", get(events_page))
         .route("/logs", get(logs_page))
@@ -53,6 +65,12 @@ pub fn router(state: WebState) -> Router {
         .route("/assets/habibi-logo.svg", get(logo_asset))
         .route("/assets/core.css", get(core_css_asset))
         .route("/assets/extensions.js", get(extensions_js_asset))
+        .route("/assets/settings.js", get(settings_js_asset))
+        .route("/assets/extension-kv.js", get(extension_kv_js_asset))
+        .route(
+            "/assets/extension-config.js",
+            get(extension_config_js_asset),
+        )
         .route("/assets/home.js", get(home_js_asset))
         .route("/assets/app.js", get(app_js_asset))
         .route("/assets/events.js", get(events_js_asset))
@@ -78,8 +96,16 @@ pub fn router(state: WebState) -> Router {
         .route("/api/extensions", get(list_extensions))
         .route("/api/extensions/{extension_id}", put(toggle_extension))
         .route(
-            "/api/extensions/{extension_id}/grants",
-            get(extension_grants).put(update_extension_grants),
+            "/api/settings/boundaries",
+            get(boundary_policy).put(update_boundary_policy),
+        )
+        .route(
+            "/api/extensions/{extension_id}/kv",
+            get(extension_kv_entries),
+        )
+        .route(
+            "/api/extensions/{extension_id}/config",
+            get(extension_config).put(update_extension_config),
         )
         .route(
             "/api/extensions/{extension_id}/check-update",
@@ -105,6 +131,18 @@ async fn home_page() -> Response {
 
 async fn extensions_page() -> Response {
     html_response(include_str!("../web/extensions.html"))
+}
+
+async fn settings_page() -> Response {
+    html_response(include_str!("../web/settings.html"))
+}
+
+async fn extension_kv_page() -> Response {
+    html_response(include_str!("../web/extension-kv.html"))
+}
+
+async fn extension_config_page() -> Response {
+    html_response(include_str!("../web/extension-config.html"))
 }
 
 async fn extension_app_page() -> Response {
@@ -139,6 +177,27 @@ async fn extensions_js_asset() -> Response {
     asset_response(
         "text/javascript; charset=utf-8",
         include_bytes!("../web/extensions.js"),
+    )
+}
+
+async fn settings_js_asset() -> Response {
+    asset_response(
+        "text/javascript; charset=utf-8",
+        include_bytes!("../web/settings.js"),
+    )
+}
+
+async fn extension_kv_js_asset() -> Response {
+    asset_response(
+        "text/javascript; charset=utf-8",
+        include_bytes!("../web/extension-kv.js"),
+    )
+}
+
+async fn extension_config_js_asset() -> Response {
+    asset_response(
+        "text/javascript; charset=utf-8",
+        include_bytes!("../web/extension-config.js"),
     )
 }
 
@@ -896,105 +955,44 @@ async fn toggle_extension(
     }
 }
 
-#[derive(Deserialize)]
-struct ExtensionGrantsUpdate {
-    #[serde(default)]
-    filesystem_roots: Vec<String>,
-    #[serde(default)]
-    process_executables: BTreeMap<String, String>,
-}
-
-async fn extension_grants(
-    State(state): State<WebState>,
-    Path(extension_id): Path<String>,
-) -> Response {
-    let Some(extension) = state.extensions.get(&extension_id) else {
-        return json_response(
-            StatusCode::NOT_FOUND,
-            json!({ "error": "extension not found" }),
-        );
-    };
-    if !extension.manifest.capabilities.filesystem && !extension.manifest.capabilities.process {
-        return json_response(
-            StatusCode::BAD_REQUEST,
-            json!({ "error": "extension does not request managed grants" }),
-        );
-    }
-    match state
-        .store
-        .lock()
-        .map_err(|_| anyhow::anyhow!("event store lock poisoned"))
-    {
-        Ok(store) => {
-            let filesystem_roots = store.extension_filesystem_roots(&extension_id);
-            let process_executables = store.extension_process_executables(&extension_id);
-            match (filesystem_roots, process_executables) {
-                (Ok(filesystem_roots), Ok(process_executables)) => json_response(
-                    StatusCode::OK,
-                    json!({
-                        "filesystem_roots": filesystem_roots,
-                        "process_executables": process_executables
-                    }),
-                ),
-                (Err(error), _) | (_, Err(error)) => json_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    json!({ "error": error.to_string() }),
-                ),
-            }
-        }
-        Err(error) => json_response(
+async fn boundary_policy(State(state): State<WebState>) -> Response {
+    match state.store.lock() {
+        Ok(store) => match store.boundary_policy() {
+            Ok(policy) => json_response(StatusCode::OK, json!(policy)),
+            Err(error) => json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": error.to_string() }),
+            ),
+        },
+        Err(_) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            json!({ "error": error.to_string() }),
+            json!({ "error": "event store lock poisoned" }),
         ),
     }
 }
 
-async fn update_extension_grants(
+async fn update_boundary_policy(
     State(state): State<WebState>,
-    Path(extension_id): Path<String>,
-    axum::Json(update): axum::Json<ExtensionGrantsUpdate>,
+    axum::Json(update): axum::Json<BoundaryPolicy>,
 ) -> Response {
-    let _catalog_mutation_guard = state.catalog_mutation_lock.lock().await;
-    let Some(extension) = state.extensions.get(&extension_id) else {
-        return json_response(
-            StatusCode::NOT_FOUND,
-            json!({ "error": "extension not found" }),
-        );
-    };
-    if !extension.manifest.capabilities.filesystem && !extension.manifest.capabilities.process {
-        return json_response(
-            StatusCode::BAD_REQUEST,
-            json!({ "error": "extension does not request managed grants" }),
-        );
-    }
-    let filesystem_enabled = extension.manifest.capabilities.filesystem;
-    let process_enabled = extension.manifest.capabilities.process;
-    #[cfg(not(target_os = "linux"))]
-    if process_enabled {
-        return json_response(
-            StatusCode::BAD_REQUEST,
-            json!({ "error": "process capability is supported only on Linux" }),
-        );
-    }
+    let _guard = state.catalog_mutation_lock.lock().await;
     let normalized = match tokio::task::spawn_blocking(move || {
-        let roots = if filesystem_enabled {
-            normalize_grant_roots(&update.filesystem_roots)?
-        } else {
-            Vec::new()
-        };
-        #[cfg(target_os = "linux")]
-        let executables = if process_enabled {
-            normalize_executable_grants(&update.process_executables)?
-        } else {
-            Vec::new()
-        };
-        #[cfg(not(target_os = "linux"))]
-        let executables = Vec::new();
-        Ok::<_, anyhow::Error>((roots, executables))
+        Ok::<_, anyhow::Error>(BoundaryPolicy {
+            directory_includes: normalize_grant_roots(&update.directory_includes)?,
+            directory_excludes: normalize_grant_roots(&update.directory_excludes)?,
+            #[cfg(target_os = "linux")]
+            program_includes: normalize_program_paths(&update.program_includes)?,
+            #[cfg(target_os = "linux")]
+            program_excludes: normalize_program_paths(&update.program_excludes)?,
+            #[cfg(not(target_os = "linux"))]
+            program_includes: Vec::new(),
+            #[cfg(not(target_os = "linux"))]
+            program_excludes: Vec::new(),
+        })
     })
     .await
     {
-        Ok(Ok(roots)) => roots,
+        Ok(Ok(policy)) => policy,
         Ok(Err(error)) => {
             return json_response(
                 StatusCode::BAD_REQUEST,
@@ -1008,30 +1006,117 @@ async fn update_extension_grants(
             );
         }
     };
-    let (filesystem_roots, process_executables) = normalized;
-    match state
-        .store
-        .lock()
-        .map_err(|_| anyhow::anyhow!("event store lock poisoned"))
-        .and_then(|mut store| {
-            if filesystem_enabled {
-                store.set_extension_filesystem_roots(&extension_id, &filesystem_roots)?;
-            }
-            if process_enabled {
-                store.set_extension_process_executables(&extension_id, &process_executables)?;
-            }
-            Ok(())
-        }) {
-        Ok(()) => json_response(
-            StatusCode::OK,
-            json!({
-                "filesystem_roots": filesystem_roots,
-                "process_executables": process_executables
-            }),
-        ),
-        Err(error) => json_response(
+    match state.store.lock() {
+        Ok(store) => match store.set_boundary_policy(&normalized) {
+            Ok(()) => json_response(StatusCode::OK, json!(normalized)),
+            Err(error) => json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": error.to_string() }),
+            ),
+        },
+        Err(_) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": "event store lock poisoned" }),
+        ),
+    }
+}
+
+async fn extension_kv_entries(
+    State(state): State<WebState>,
+    Path(extension_id): Path<String>,
+) -> Response {
+    let Some(extension) = state.extensions.get(&extension_id) else {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "extension not found" }),
+        );
+    };
+    if !extension.manifest.capabilities.kv && extension.config_schema().is_none() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "extension does not use KV" }),
+        );
+    }
+    match state.store.lock() {
+        Ok(store) => match store.kv_entries(&extension_id, 1_000) {
+            Ok(entries) => json_response(
+                StatusCode::OK,
+                json!({ "extension_id": extension_id, "entries": entries }),
+            ),
+            Err(error) => json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": error.to_string() }),
+            ),
+        },
+        Err(_) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": "event store lock poisoned" }),
+        ),
+    }
+}
+
+async fn extension_config(
+    State(state): State<WebState>,
+    Path(extension_id): Path<String>,
+) -> Response {
+    let Some(extension) = state.extensions.get(&extension_id) else {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "extension not found" }),
+        );
+    };
+    let Some(schema) = extension.config_schema() else {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "extension has no typed configuration" }),
+        );
+    };
+    match state.store.lock() {
+        Ok(store) => match store.kv_get(&extension_id, "__habibi_config") {
+            Ok(value) => json_response(
+                StatusCode::OK,
+                json!({ "extension_id": extension_id, "schema": schema, "value": value.unwrap_or_else(|| json!({})) }),
+            ),
+            Err(error) => json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": error.to_string() }),
+            ),
+        },
+        Err(_) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": "event store lock poisoned" }),
+        ),
+    }
+}
+
+async fn update_extension_config(
+    State(state): State<WebState>,
+    Path(extension_id): Path<String>,
+    axum::Json(value): axum::Json<Value>,
+) -> Response {
+    let Some(extension) = state.extensions.get(&extension_id) else {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "extension not found" }),
+        );
+    };
+    if let Err(error) = extension.validate_config(&value) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
             json!({ "error": error.to_string() }),
+        );
+    }
+    match state.store.lock() {
+        Ok(store) => match store.kv_set(&extension_id, "__habibi_config", &value) {
+            Ok(()) => json_response(StatusCode::OK, json!({ "value": value })),
+            Err(error) => json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": error.to_string() }),
+            ),
+        },
+        Err(_) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": "event store lock poisoned" }),
         ),
     }
 }

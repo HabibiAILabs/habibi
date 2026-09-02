@@ -92,15 +92,16 @@ def copy_attachments(task: dict, dataset: Path, workspace: Path) -> list[Path]:
 
 def configure_tools(base_url: str, workspace: Path, with_process: bool) -> None:
     root = str(workspace.resolve())
-    if with_process:
-        request_json(
-            f"{base_url}/api/extensions/process/grants",
-            "PUT",
-            {
-                "filesystem_roots": [root],
-                "process_executables": {"python": "/usr/bin/python3"},
-            },
-        )
+    request_json(
+        f"{base_url}/api/settings/boundaries",
+        "PUT",
+        {
+            "directory_includes": [root],
+            "directory_excludes": [],
+            "program_includes": ["/usr/bin/python3"] if with_process else [],
+            "program_excludes": [],
+        },
+    )
 
 
 def run_task(task: dict, args: argparse.Namespace, run_root: Path) -> dict:

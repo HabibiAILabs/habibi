@@ -23,27 +23,30 @@ Blocking findings abort installation. Warnings are recorded in `.habibi-install.
 
 Static scanning cannot prove that an extension is safe or private. It may miss obfuscated behavior, dynamically constructed endpoints, logic flaws, or data disclosure through allowed APIs.
 
-## Filesystem grants
+## Global filesystem boundary
 
-The filesystem capability defaults to no access. Users grant existing canonical directories per
-extension. Host operations are capability-confined, reject symbolic links and special files, bound
-all reads/searches, serialize mutations, require hashes for existing-file changes, and use atomic
-replacement. Grants reduce accidental scope; they do not make a fully trusted extension hostile-code
-safe. File contents and patch arguments remain present in durable action events and exact model logs.
+Filesystem access is default-deny. Core settings contain global include and exclude lists of existing
+canonical directories; exclusions always win. Every extension declaring `filesystem` shares this
+maximum boundary. Host operations reject symbolic links and special files, bound reads/searches,
+serialize mutations, require hashes for existing-file changes, and use atomic replacement. Boundaries
+reduce accidental scope; they do not make trusted extensions hostile-code safe. File contents and
+patch arguments remain present in durable action events and exact model logs.
 
 ## Process execution
 
-Process execution is Linux-only and default-deny. Users grant exact native executable aliases and
-filesystem roots independently. Habibi verifies executable identity and SHA-256, executes sealed
-verified bytes without a shell, clears the environment, disables network access, bounds arguments,
-time, and output, and kills the complete delegated cgroup after every run. The API is available only
-during registered tool actions and fails closed without Bubblewrap or delegated cgroup v2 support.
+Process execution is Linux-only and default-deny. Core settings contain global include and exclude
+lists of canonical native ELF programs. Extensions may request an approved absolute path or an
+unambiguous basename. Habibi reads the current approved image into sealed memory without a shell,
+clears the environment, disables network access, mounts the approved working directory, bounds
+arguments, time, and output, and kills the complete delegated cgroup after every run. The API is
+available only during registered tool actions and fails closed without Bubblewrap or delegated
+cgroup v2 support.
 
-The selected filesystem root is mounted read-write inside the sandbox; process writes do not receive
-Workspace's per-file hash checks. System runtime libraries under `/usr` and `/lib*`, plus Bubblewrap
-itself, are trusted platform dependencies and are not pinned by the executable grant. Explicitly
-granting a native interpreter grants its normal argv authority. Arguments and returned stdout/stderr
-become durable action/model history. Never pass credentials or other secrets through process tools.
+The working directory is mounted read-write unless the caller requests read-only access; process
+writes do not receive per-file hash checks. System runtime libraries under `/usr` and `/lib*`, plus
+Bubblewrap itself, are trusted platform dependencies. Approved programs may execute helpers, and
+approving a native interpreter or shell grants its normal argv authority. Arguments and returned
+stdout/stderr become durable action/model history. Never pass credentials through process tools.
 The host-authored process effect omits argv, environment, stdout, and stderr.
 
 ## Web search

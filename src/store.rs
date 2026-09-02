@@ -136,36 +136,26 @@ pub struct UsageStats {
     pub tools: Vec<ToolUsageStats>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-struct FilesystemRootGrant {
-    path: String,
-    identity: Option<String>,
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct BoundaryPolicy {
+    pub directory_includes: Vec<String>,
+    pub directory_excludes: Vec<String>,
+    pub program_includes: Vec<String>,
+    pub program_excludes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ProcessExecutableGrant {
-    pub alias: String,
-    pub path: String,
-    pub identity: Option<String>,
-    pub sha256: String,
-}
-
-#[cfg(unix)]
-fn filesystem_identity(metadata: &std::fs::Metadata) -> Option<String> {
-    use std::os::unix::fs::MetadataExt;
-    Some(format!("{}:{}", metadata.dev(), metadata.ino()))
-}
-
-#[cfg(not(unix))]
-fn filesystem_identity(_metadata: &std::fs::Metadata) -> Option<String> {
-    None
+#[derive(Debug, Clone, Serialize)]
+pub struct ExtensionKvEntry {
+    pub key: String,
+    pub value: serde_json::Value,
+    pub updated_at: String,
 }
 
 pub struct EventStore {
     connection: Connection,
 }
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 impl EventStore {
     pub fn open(path: &str) -> Result<Self> {
@@ -288,16 +278,13 @@ impl EventStore {
                  updated_at   TEXT NOT NULL
              );
 
-             CREATE TABLE IF NOT EXISTS extension_grants (
-                 extension_id     TEXT PRIMARY KEY,
-                 filesystem_roots TEXT NOT NULL,
-                 updated_at       TEXT NOT NULL
-             );
-
-             CREATE TABLE IF NOT EXISTS extension_process_grants (
-                 extension_id TEXT PRIMARY KEY,
-                 executables  TEXT NOT NULL,
-                 updated_at   TEXT NOT NULL
+             CREATE TABLE IF NOT EXISTS boundary_policy (
+                 singleton          INTEGER PRIMARY KEY CHECK(singleton = 1),
+                 directory_includes TEXT NOT NULL,
+                 directory_excludes TEXT NOT NULL,
+                 program_includes   TEXT NOT NULL,
+                 program_excludes   TEXT NOT NULL,
+                 updated_at         TEXT NOT NULL
              );
 
              CREATE TABLE IF NOT EXISTS event_links (
@@ -345,7 +332,7 @@ impl EventStore {
              CREATE INDEX IF NOT EXISTS event_embeddings_by_model
                  ON event_embeddings(embedding_model, embedding_revision, dimensions, event_id);
 
-             PRAGMA user_version = 4;"
+             PRAGMA user_version = 5;"
         )?;
 
         Ok(Self { connection })
@@ -1670,102 +1657,54 @@ impl EventStore {
         Ok(())
     }
 
-    pub fn extension_filesystem_roots(&self, extension_id: &str) -> Result<Vec<String>> {
-        let roots = self
+    pub fn boundary_policy(&self) -> Result<BoundaryPolicy> {
+        let policy = self
             .connection
             .query_row(
-                "SELECT filesystem_roots FROM extension_grants WHERE extension_id = ?1",
-                [extension_id],
-                |row| row.get::<_, String>(0),
+                "SELECT directory_includes, directory_excludes, program_includes, program_excludes
+                 FROM boundary_policy WHERE singleton = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
             )
             .optional()?;
-        let grants = roots
-            .map(|roots| serde_json::from_str::<Vec<FilesystemRootGrant>>(&roots))
-            .transpose()?
-            .unwrap_or_default();
-        grants
-            .into_iter()
-            .map(|grant| {
-                let metadata = std::fs::metadata(&grant.path).with_context(|| {
-                    format!("granted filesystem root '{}' no longer exists", grant.path)
-                })?;
-                if !metadata.is_dir() || grant.identity != filesystem_identity(&metadata) {
-                    anyhow::bail!(
-                        "granted filesystem root '{}' changed identity; grant it again",
-                        grant.path
-                    );
-                }
-                Ok(grant.path)
-            })
-            .collect()
+        let Some((directory_includes, directory_excludes, program_includes, program_excludes)) =
+            policy
+        else {
+            return Ok(BoundaryPolicy::default());
+        };
+        Ok(BoundaryPolicy {
+            directory_includes: serde_json::from_str(&directory_includes)?,
+            directory_excludes: serde_json::from_str(&directory_excludes)?,
+            program_includes: serde_json::from_str(&program_includes)?,
+            program_excludes: serde_json::from_str(&program_excludes)?,
+        })
     }
 
-    pub fn extension_process_executables(
-        &self,
-        extension_id: &str,
-    ) -> Result<Vec<ProcessExecutableGrant>> {
-        let grants = self
-            .connection
-            .query_row(
-                "SELECT executables FROM extension_process_grants WHERE extension_id = ?1",
-                [extension_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-        grants
-            .map(|grants| serde_json::from_str(&grants).map_err(Into::into))
-            .unwrap_or_else(|| Ok(Vec::new()))
-    }
-
-    pub fn set_extension_process_executables(
-        &mut self,
-        extension_id: &str,
-        grants: &[ProcessExecutableGrant],
-    ) -> Result<()> {
+    pub fn set_boundary_policy(&self, policy: &BoundaryPolicy) -> Result<()> {
         self.connection.execute(
-            "INSERT INTO extension_process_grants (extension_id, executables, updated_at)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT(extension_id) DO UPDATE SET
-                 executables = excluded.executables,
+            "INSERT INTO boundary_policy (
+                 singleton, directory_includes, directory_excludes,
+                 program_includes, program_excludes, updated_at
+             ) VALUES (1, ?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(singleton) DO UPDATE SET
+                 directory_includes = excluded.directory_includes,
+                 directory_excludes = excluded.directory_excludes,
+                 program_includes = excluded.program_includes,
+                 program_excludes = excluded.program_excludes,
                  updated_at = excluded.updated_at",
             params![
-                extension_id,
-                serde_json::to_string(grants)?,
-                Utc::now().to_rfc3339()
-            ],
-        )?;
-        Ok(())
-    }
-
-    pub fn set_extension_filesystem_roots(
-        &self,
-        extension_id: &str,
-        roots: &[String],
-    ) -> Result<()> {
-        let grants = roots
-            .iter()
-            .map(|path| {
-                let metadata = std::fs::metadata(path)
-                    .with_context(|| format!("filesystem root '{path}' does not exist"))?;
-                if !metadata.is_dir() {
-                    anyhow::bail!("filesystem root '{path}' is not a directory");
-                }
-                Ok(FilesystemRootGrant {
-                    path: path.clone(),
-                    identity: filesystem_identity(&metadata),
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        self.connection.execute(
-            "INSERT INTO extension_grants (extension_id, filesystem_roots, updated_at)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT(extension_id) DO UPDATE SET
-                 filesystem_roots = excluded.filesystem_roots,
-                 updated_at = excluded.updated_at",
-            params![
-                extension_id,
-                serde_json::to_string(&grants)?,
-                Utc::now().to_rfc3339()
+                serde_json::to_string(&policy.directory_includes)?,
+                serde_json::to_string(&policy.directory_excludes)?,
+                serde_json::to_string(&policy.program_includes)?,
+                serde_json::to_string(&policy.program_excludes)?,
+                Utc::now().to_rfc3339(),
             ],
         )?;
         Ok(())
@@ -1807,6 +1746,30 @@ impl EventStore {
             "DELETE FROM extension_kv WHERE extension_id = ?1 AND key = ?2",
             params![extension_id, key],
         )? > 0)
+    }
+
+    pub fn kv_entries(&self, extension_id: &str, limit: usize) -> Result<Vec<ExtensionKvEntry>> {
+        let mut statement = self.connection.prepare(
+            "SELECT key, value, updated_at FROM extension_kv
+             WHERE extension_id = ?1 ORDER BY key ASC LIMIT ?2",
+        )?;
+        statement
+            .query_map(params![extension_id, limit as i64], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .map(|row| -> Result<_> {
+                let (key, value, updated_at) = row?;
+                Ok(ExtensionKvEntry {
+                    key,
+                    value: serde_json::from_str(&value)?,
+                    updated_at,
+                })
+            })
+            .collect()
     }
 
     pub fn kv_list(
@@ -2654,5 +2617,26 @@ mod tests {
             store.kv_get("other", "theme").unwrap(),
             Some(json!("light"))
         );
+        let entries = store.kv_entries("chat", 100).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].key, "theme");
+        assert_eq!(entries[0].value, json!("dark"));
+        assert!(!entries[0].updated_at.is_empty());
+    }
+
+    #[test]
+    fn persists_one_global_boundary_policy() {
+        let store = EventStore::open(":memory:").unwrap();
+        let policy = BoundaryPolicy {
+            directory_includes: vec!["/allowed".into()],
+            directory_excludes: vec!["/allowed/private".into()],
+            program_includes: vec!["/usr/bin/git".into()],
+            program_excludes: Vec::new(),
+        };
+        store.set_boundary_policy(&policy).unwrap();
+        let loaded = store.boundary_policy().unwrap();
+        assert_eq!(loaded.directory_includes, policy.directory_includes);
+        assert_eq!(loaded.directory_excludes, policy.directory_excludes);
+        assert_eq!(loaded.program_includes, policy.program_includes);
     }
 }

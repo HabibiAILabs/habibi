@@ -108,7 +108,9 @@ Then open `http://127.0.0.1:8787`. The home page presents Habibi itself; extensi
 and enable/disable controls live at `/extensions`. Extensions may register application home pages
 and icons; enabled apps appear as large homepage cards and open inside Habibi's shared `/apps` shell.
 The interactive causal view is at `/trace`;
-domain history is at `/events`, operational execution at `/logs`, and usage totals at `/stats`.
+domain history is at `/events`, operational execution at `/logs`, usage totals at `/stats`, and
+global directory/program boundaries at `/settings`. Extension cards show declared capabilities and
+link to read-only KV exploration or schema-validated configuration when available.
 
 Extensions are installed separately from the core runtime. Install the official packages you need,
 then start Habibi:
@@ -228,11 +230,12 @@ PUT    /extensions/chat/api/preferences
 
 ## Process extension
 
-The Linux-only Process extension runs exact user-granted native executables without implicit shell
-evaluation. Each invocation verifies the executable hash, executes sealed bytes inside Bubblewrap namespaces, removes
-network and ambient environment access, exposes one granted filesystem root, bounds output/time, and
-kills the complete delegated cgroup afterward. Configure both root and executable grants on
-`/extensions`. Arguments and returned output are durable; never use process tools for secrets.
+The Linux-only Process extension runs globally approved native programs without implicit shell
+evaluation. Core resolves a basename only when it identifies one included program, executes current
+verified ELF bytes from sealed memory inside Bubblewrap namespaces, removes network and ambient
+environment access, mounts only the approved working directory, bounds output/time, and kills the
+complete delegated cgroup afterward. Configure directory and program include/exclude lists on
+`/settings`; exclusions win. Arguments and returned output are durable; never use process tools for secrets.
 
 ## Git extension
 

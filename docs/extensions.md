@@ -1,8 +1,8 @@
 # Habibi extensions
 
 Extensions are versioned Lua packages installed beneath `HABIBI_EXTENSIONS_DIR`. Each extension
-has its own HTTP namespace and KV namespace. API version 3 provides formatted context hooks
-while remaining deliberately small and synchronous.
+has its own HTTP namespace and KV namespace. API version 3 provides formatted context hooks;
+API version 4 provides global-boundary filesystem and process APIs.
 
 Install from a local package or Git repository:
 
@@ -36,7 +36,7 @@ id = "example"
 name = "Example"
 version = "0.1.0"
 description = "What this extension adds to Habibi."
-api_version = 3
+api_version = 4
 
 [capabilities]
 web = true
@@ -54,11 +54,12 @@ static_dir = "web"
 
 Capabilities are optional and default to false. An extension receives only the corresponding
 host APIs. Lua runs without the `io`, `os`, `package`, or `debug` standard libraries. API version 3
-uses `habibi.context.register` for per-event model context. Tool discovery is core-owned semantic retrieval over registered tool descriptions and input fields.
+or newer uses `habibi.context.register` for per-event model context. Filesystem/process capabilities
+require API version 4. Tool discovery is core-owned semantic retrieval over registered tool descriptions and input fields.
 
 Habibi also infers provided features from registered routes, static web content, and context hooks. These details appear at `/extensions`, where extensions can be enabled
 or disabled.
-An extension with static web content receives an **Open** link to `/extensions/{id}/`. Installed
+An extension receives an **Open** link only when it registers a home with `habibi.web.home`. Installed
 extensions are fully trusted local code; capabilities make behavior visible during review and
 control which Lua host APIs are exposed, but they are not a hostile-code security boundary.
 
@@ -228,13 +229,28 @@ Values must be JSON-compatible. The host always supplies the extension namespace
 code cannot select another extension's namespace.
 
 KV is intended for incidental mutable state such as preferences, drafts, and caches. Domain
-history should generally remain event-sourced.
+history should generally remain event-sourced. The Extensions page links to a read-only core KV
+Explorer for each KV-capable extension.
 
-## Granted filesystem access
+## Typed configuration
 
-The `filesystem` capability exposes `habibi.files`, but grants no paths by itself. Users grant
-existing absolute directories from the Extensions page. An extension cannot create or broaden its
-own grants. Empty grants deny every operation.
+An extension may provide a JSON Schema from its package:
+
+```toml
+[config]
+schema = "config.schema.json"
+```
+
+Habibi exposes a schema-validated editor at `/admin/extensions/{extension-id}/config` and stores the
+complete JSON value under the extension namespace. Lua reads it with `habibi.config.get()`. Invalid
+values are rejected atomically. Extensions may instead provide their own configuration application,
+as Soul does; configuration controls do not appear inline on extension cards.
+
+## Global-boundary filesystem access
+
+The `filesystem` capability exposes `habibi.files`, but grants no paths by itself. Core Settings
+hold global include and exclude lists of existing absolute directories. Every filesystem-capable
+extension shares this maximum boundary, and exclusions always win. Empty includes deny every operation.
 
 ```lua
 local file = habibi.files.read({ path = "/home/user/project/README.md" })
@@ -247,57 +263,56 @@ local changed = habibi.files.patch({
 ```
 
 Available host operations are `list`, `read`, `search`, `write`, `patch`, `mkdir`, `move`, and
-`delete`. Paths must be absolute, remain beneath a granted canonical root, and contain no `.` or
+`delete`. Paths must be absolute, remain beneath a globally included canonical root and outside exclusions, and contain no `.` or
 `..` components. Capability-based directory handles confine actual reads and mutations; symbolic
 links and special files are not followed. Reads and writes are limited to 2 MiB. Search is bounded
 by query length, depth, entries, files, bytes, matches, and output preview size.
 
 Creating a file requires a missing destination. Replacing or patching an existing file requires the
 exact SHA-256 returned by `read`; stale writes fail without changing the target. Writes use a synced
-temporary file and atomic rename. Deletes are nonrecursive and cannot delete a granted root. Moves
-cannot cross granted roots or overwrite intentionally existing destinations.
+temporary file and atomic rename. Deletes are nonrecursive and cannot delete an included root. Moves
+cannot cross included roots or overwrite intentionally existing destinations.
 
 Filesystem mutations are serialized within one loaded extension generation. Core—not Lua—records
 host-authored `workspace.*` mutation effects, including when Lua fails after the mutation. Effect
 payloads contain paths, hashes, and sizes, never file contents or patch text. Action requests,
 action results, and exact model logs still retain tool arguments/results under Habibi's existing
-observability policy; filesystem grants are therefore a scope boundary, not a secret-content
+observability policy; filesystem boundaries are therefore a scope boundary, not a secret-content
 redaction feature.
 
 ## Sandboxed process execution
 
-The Linux-only `process` capability exposes `habibi.process.run` only while a registered tool handler
+The Linux-only API-version-4 `process` capability exposes `habibi.process.run` only while a registered tool handler
 is executing. Initialization, routes, and context hooks cannot run processes. The
-extension must have both an exact executable grant and a filesystem root containing the requested
-working directory.
+requested program and working directory must both pass the global core boundary policy.
 
 ```lua
 local outcome = habibi.process.run({
-  executable = "git",
+  program = "git", -- or its approved absolute path
   args = habibi.array({ "status", "--porcelain=v1" }),
   cwd = "/home/user/project",
   timeout_ms = 30000,
-  filesystem_root = "/home/user/project", -- optional exact grant
-  filesystem_access = "read_only"         -- defaults to read_write
+  filesystem_access = "read_only" -- defaults to read_write
 })
 ```
 
-Users configure executable aliases on the Extensions page. Grants accept only canonical executable
-native ELF files, store device/inode identity and SHA-256, and are verified on every invocation. The
-verified bytes are copied into a sealed memory file before launch. There is no executable path
-lookup, implicit shell evaluation, script/shebang support, caller environment, stdin, detached mode,
-or network. Explicitly granting a native interpreter grants its normal argv authority.
+Users configure global program includes and excludes on the Settings page. Entries are canonical
+native ELF files. A call may use an absolute approved path or a basename that matches exactly one
+included program. Current program bytes are copied into sealed memory before launch. There is no
+ambient PATH lookup, implicit shell evaluation, script/shebang support, caller environment, stdin,
+detached mode, or network. Approved programs may launch helpers; approving an interpreter or shell
+grants its normal argv authority.
 Arguments are literal argv entries, limited to 128 entries and 64 KiB total.
 
 Each run uses Bubblewrap namespaces and a delegated cgroup v2 leaf. The sandbox receives a minimal
-runtime filesystem plus one selected filesystem grant. Callers may require an exact grant with
-`filesystem_root` and mount it `read_only`; otherwise the containing grant is mounted read-write.
+runtime filesystem plus the requested working directory when it is included and does not intersect
+an exclusion. Callers may mount it `read_only`; otherwise it is mounted read-write.
 Stdout and stderr are
 drained concurrently and capped at 1 MiB each. Timeout defaults to 30 seconds and is capped at 120
 seconds. Completion, timeout, and output overflow kill the whole cgroup. Execution fails closed when
 Bubblewrap or delegated cgroup v2 is unavailable.
 
-Core emits a host-authored `process.execution.completed` effect with executable alias/hash, cwd,
+Core emits a host-authored `process.execution.completed` effect with program path/hash, cwd,
 outcome, duration, exit status, and byte counts—never argv or output. Tool arguments, returned output,
 action results, and exact model logs remain durable. Do not use process tools for secrets.
 

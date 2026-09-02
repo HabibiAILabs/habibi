@@ -301,6 +301,7 @@ mod tests {
                 ..ExtensionCapabilities::default()
             },
             web: None,
+            config: None,
         }
     }
 

@@ -45,6 +45,8 @@ pub struct ExtensionManifest {
     pub capabilities: ExtensionCapabilities,
     #[serde(default)]
     pub web: Option<ExtensionWebConfig>,
+    #[serde(default)]
+    pub config: Option<ExtensionConfig>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -70,6 +72,11 @@ pub struct ExtensionCapabilities {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExtensionWebConfig {
     pub static_dir: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExtensionConfig {
+    pub schema: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -196,6 +203,7 @@ pub struct LoadedExtension {
     pub generation: String,
     execution_snapshot: tempfile::TempDir,
     static_files: HashMap<String, (Vec<u8>, String)>,
+    config_schema: Option<Value>,
     store: SharedEventStore,
     enabled: AtomicBool,
     state: Mutex<LuaState>,
@@ -221,6 +229,7 @@ impl LoadedExtension {
             .lock()
             .map_err(|_| anyhow::anyhow!("event store lock poisoned"))?
             .extension_enabled(&manifest.id)?;
+        let config_schema = load_config_schema(directory, &manifest)?;
 
         let lua = Lua::new_with(
             StdLib::TABLE | StdLib::STRING | StdLib::UTF8 | StdLib::MATH,
@@ -253,12 +262,12 @@ impl LoadedExtension {
         let filesystem_host = manifest
             .capabilities
             .filesystem
-            .then(|| FilesystemHost::new(&manifest.id, store.clone()));
+            .then(|| FilesystemHost::new(store.clone()));
         #[cfg(target_os = "linux")]
         let process_host = manifest
             .capabilities
             .process
-            .then(|| ProcessHost::new(&manifest.id, store.clone()));
+            .then(|| ProcessHost::new(store.clone()));
         #[cfg(not(target_os = "linux"))]
         if manifest.capabilities.process {
             bail!("process capability is supported only on Linux");
@@ -292,6 +301,24 @@ impl LoadedExtension {
 
         if manifest.capabilities.kv {
             habibi.set("kv", create_kv_api(&lua, &manifest.id, store.clone())?)?;
+        }
+        if config_schema.is_some() {
+            let id = manifest.id.clone();
+            let config_store = store.clone();
+            let config = lua.create_table()?;
+            config.set(
+                "get",
+                lua.create_function(move |lua, ()| {
+                    let value = config_store
+                        .lock()
+                        .map_err(|_| mlua::Error::external("event store lock poisoned"))?
+                        .kv_get(&id, "__habibi_config")
+                        .map_err(mlua::Error::external)?
+                        .unwrap_or_else(|| Value::Object(Default::default()));
+                    lua.to_value(&value)
+                })?,
+            )?;
+            habibi.set("config", config)?;
         }
         if manifest.capabilities.events {
             habibi.set(
@@ -457,13 +484,19 @@ impl LoadedExtension {
         validate_unique_hooks(&manifest.id, "context", &context_hooks)?;
         context_hooks.sort_by(|left, right| left.name.cmp(&right.name));
         let static_files = load_static_files(directory, &manifest)?;
-        let generation = extension_generation(&manifest_source, &source, &static_files);
+        let generation = extension_generation(
+            &manifest_source,
+            &source,
+            &static_files,
+            config_schema.as_ref(),
+        );
         let execution_snapshot = snapshot_extension(directory)?;
         Ok(Self {
             manifest,
             generation,
             execution_snapshot,
             static_files,
+            config_schema,
             store,
             enabled: AtomicBool::new(enabled),
             state: Mutex::new(LuaState {
@@ -491,6 +524,27 @@ impl LoadedExtension {
             .home
             .as_ref()
             .map(|home| (home.path.clone(), home.icon.clone(), home.title.clone()))
+    }
+
+    pub fn config_schema(&self) -> Option<Value> {
+        self.config_schema.clone()
+    }
+
+    pub fn validate_config(&self, value: &Value) -> Result<()> {
+        let schema = self
+            .config_schema
+            .as_ref()
+            .context("extension has no typed configuration schema")?;
+        let validator = jsonschema::validator_for(schema)?;
+        if let Err(error) = validator.validate(value) {
+            let path = error.instance_path().to_string();
+            bail!(
+                "configuration is invalid at {}: {}",
+                if path.is_empty() { "/" } else { &path },
+                error
+            );
+        }
+        Ok(())
     }
 
     pub fn set_enabled(&self, enabled: bool) -> Result<()> {
@@ -875,20 +929,8 @@ impl ExtensionManager {
                 if tool_count > 0 {
                     provides.push(format!("{tool_count} model tools"));
                 }
-                if extension.manifest.capabilities.kv {
-                    provides.push("Namespaced KV storage".to_owned());
-                }
-                if extension.manifest.capabilities.events {
-                    provides.push("Event history access".to_owned());
-                }
-                if extension.manifest.capabilities.filesystem {
-                    provides.push("Granted filesystem access".to_owned());
-                }
-                if extension.manifest.capabilities.process {
-                    provides.push("Sandboxed process execution".to_owned());
-                }
-                if extension.manifest.capabilities.search {
-                    provides.push("External web search".to_owned());
+                if extension.config_schema.is_some() {
+                    provides.push("Typed configuration".to_owned());
                 }
                 if context_hook_count > 0 {
                     provides.push(format!("{context_hook_count} context hooks"));
@@ -896,26 +938,6 @@ impl ExtensionManager {
                 let installation = ExtensionInstaller::new(self.directory.clone())
                     .metadata(&extension.manifest.id)
                     .ok();
-                let filesystem_roots = extension
-                    .store
-                    .lock()
-                    .ok()
-                    .and_then(|store| {
-                        store
-                            .extension_filesystem_roots(&extension.manifest.id)
-                            .ok()
-                    })
-                    .unwrap_or_default();
-                let process_executables = extension
-                    .store
-                    .lock()
-                    .ok()
-                    .and_then(|store| {
-                        store
-                            .extension_process_executables(&extension.manifest.id)
-                            .ok()
-                    })
-                    .unwrap_or_default();
                 ExtensionSummary {
                     id: extension.manifest.id.clone(),
                     name: extension.manifest.name.clone(),
@@ -925,8 +947,6 @@ impl ExtensionManager {
                     capabilities: extension.manifest.capabilities.clone(),
                     provides,
                     installation,
-                    filesystem_roots,
-                    process_executables,
                     main_page: home
                         .as_ref()
                         .map(|_| format!("/apps/{}", extension.manifest.id)),
@@ -938,6 +958,10 @@ impl ExtensionManager {
                             .map(|path| format!("/extensions/{}{}", extension.manifest.id, path))
                     }),
                     app_name: home.and_then(|(_, _, title)| title),
+                    config_page: extension
+                        .config_schema
+                        .as_ref()
+                        .map(|_| format!("/admin/extensions/{}/config", extension.manifest.id)),
                 }
             })
             .collect::<Vec<_>>();
@@ -956,12 +980,11 @@ pub struct ExtensionSummary {
     pub capabilities: ExtensionCapabilities,
     pub provides: Vec<String>,
     pub installation: Option<InstallMetadata>,
-    pub filesystem_roots: Vec<String>,
-    pub process_executables: Vec<crate::store::ProcessExecutableGrant>,
     pub main_page: Option<String>,
     pub frame_page: Option<String>,
     pub icon: Option<String>,
     pub app_name: Option<String>,
+    pub config_page: Option<String>,
 }
 
 fn create_search_api(lua: &Lua, host: SearchHost) -> mlua::Result<mlua::Table> {
@@ -1197,13 +1220,41 @@ fn create_events_api(
     Ok(events)
 }
 
+fn load_config_schema(directory: &Path, manifest: &ExtensionManifest) -> Result<Option<Value>> {
+    let Some(config) = &manifest.config else {
+        return Ok(None);
+    };
+    let relative = Path::new(&config.schema);
+    if relative.is_absolute()
+        || config.schema.contains('\\')
+        || relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        bail!("extension config schema must be a relative package path");
+    }
+    let bytes = fs::read(directory.join(relative))?;
+    if bytes.len() > 256 * 1024 {
+        bail!("extension config schema exceeds 256 KiB");
+    }
+    let schema: Value = serde_json::from_slice(&bytes)?;
+    jsonschema::validator_for(&schema).context("extension config schema is invalid")?;
+    Ok(Some(schema))
+}
+
 fn extension_generation(
     manifest: &str,
     source: &str,
     static_files: &HashMap<String, (Vec<u8>, String)>,
+    config_schema: Option<&Value>,
 ) -> String {
     let mut hasher = Sha256::new();
     for bytes in [manifest.as_bytes(), source.as_bytes()] {
+        hasher.update((bytes.len() as u64).to_be_bytes());
+        hasher.update(bytes);
+    }
+    if let Some(schema) = config_schema {
+        let bytes = serde_json::to_vec(schema).expect("JSON values always serialize");
         hasher.update((bytes.len() as u64).to_be_bytes());
         hasher.update(bytes);
     }
@@ -1351,16 +1402,24 @@ fn validate_unique_hooks(extension_id: &str, kind: &str, hooks: &[RegisteredHook
 }
 
 fn validate_manifest(manifest: &ExtensionManifest) -> Result<()> {
-    if !matches!(manifest.api_version, 2 | 3) {
+    if !matches!(manifest.api_version, 2..=4) {
         bail!(
             "extension '{}' uses unsupported API version {}",
             manifest.id,
             manifest.api_version
         );
     }
-    if manifest.capabilities.context && manifest.api_version != 3 {
+    if manifest.capabilities.context && manifest.api_version < 3 {
         bail!(
-            "extension '{}' must use API version 3 for formatted context hooks",
+            "extension '{}' must use API version 3 or newer for formatted context hooks",
+            manifest.id
+        );
+    }
+    if (manifest.capabilities.filesystem || manifest.capabilities.process)
+        && manifest.api_version < 4
+    {
+        bail!(
+            "extension '{}' must use API version 4 for global boundary APIs",
             manifest.id
         );
     }
@@ -1421,7 +1480,7 @@ mod tests {
         fs::create_dir_all(extension.join("web")).unwrap();
         fs::write(
             extension.join("extension.toml"),
-            "id = \"example\"\nname = \"Example\"\nversion = \"1.0.0\"\napi_version = 2\n[capabilities]\nweb = true\n[web]\nstatic_dir = \"web\"\n",
+            "id = \"example\"\nname = \"Example\"\nversion = \"1.0.0\"\napi_version = 2\n[capabilities]\nweb = true\n[web]\nstatic_dir = \"web\"\n[config]\nschema = \"config.schema.json\"\n",
         )
         .unwrap();
         fs::write(
@@ -1431,10 +1490,26 @@ mod tests {
         .unwrap();
         fs::write(extension.join("web/index.html"), "home").unwrap();
         fs::write(extension.join("web/icon.svg"), "<svg></svg>").unwrap();
+        fs::write(
+            extension.join("config.schema.json"),
+            r#"{"type":"object","properties":{"enabled":{"type":"boolean"}},"required":["enabled"]}"#,
+        )
+        .unwrap();
         let store = EventStore::open(":memory:").unwrap().shared();
         let manager = ExtensionManager::load(directory.path(), store).unwrap();
         let summary = manager.summaries().pop().unwrap();
         assert_eq!(summary.app_name.as_deref(), Some("Example App"));
+        assert_eq!(
+            summary.config_page.as_deref(),
+            Some("/admin/extensions/example/config")
+        );
+        let loaded = manager.get("example").unwrap();
+        assert!(
+            loaded
+                .validate_config(&serde_json::json!({ "enabled": true }))
+                .is_ok()
+        );
+        assert!(loaded.validate_config(&serde_json::json!({})).is_err());
         assert_eq!(summary.main_page.as_deref(), Some("/apps/example"));
         assert_eq!(summary.frame_page.as_deref(), Some("/extensions/example/"));
         assert_eq!(
@@ -1452,7 +1527,7 @@ mod tests {
         let extension_directory = tempfile::tempdir().unwrap();
         fs::write(
             extension_directory.path().join("extension.toml"),
-            "id = \"process\"\nname = \"Process\"\nversion = \"1.0.0\"\napi_version = 2\n[capabilities]\ntools = true\nfilesystem = true\nprocess = true\n",
+            "id = \"process\"\nname = \"Process\"\nversion = \"1.0.0\"\napi_version = 4\n[capabilities]\ntools = true\nfilesystem = true\nprocess = true\n",
         )
         .unwrap();
         fs::write(
@@ -1466,24 +1541,19 @@ mod tests {
         .unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let store = EventStore::open(":memory:").unwrap().shared();
-        let grants =
-            crate::process::normalize_executable_grants(&std::collections::BTreeMap::from([(
-                "printf".to_owned(),
-                "/usr/bin/printf".to_owned(),
-            )]))
+        store
+            .lock()
+            .unwrap()
+            .set_boundary_policy(&crate::store::BoundaryPolicy {
+                directory_includes: vec![workspace.path().to_str().unwrap().to_owned()],
+                directory_excludes: Vec::new(),
+                program_includes: crate::process::normalize_program_paths(&[
+                    "/usr/bin/printf".to_owned()
+                ])
+                .unwrap(),
+                program_excludes: Vec::new(),
+            })
             .unwrap();
-        {
-            let mut store = store.lock().unwrap();
-            store
-                .set_extension_filesystem_roots(
-                    "process",
-                    &[workspace.path().to_str().unwrap().to_owned()],
-                )
-                .unwrap();
-            store
-                .set_extension_process_executables("process", &grants)
-                .unwrap();
-        }
         let extension = LoadedExtension::load(extension_directory.path(), store).unwrap();
         let trigger = Event::new(
             "test.trigger",
@@ -1498,7 +1568,7 @@ mod tests {
                     call_id: "call-1".into(),
                     name: "process.run".into(),
                     arguments: serde_json::json!({
-                        "executable": "printf",
+                        "program": "printf",
                         "args": ["%s", "literal;$(no-shell)"],
                         "cwd": workspace.path()
                     }),
@@ -1560,7 +1630,7 @@ mod tests {
         let extension_directory = tempfile::tempdir().unwrap();
         fs::write(
             extension_directory.path().join("extension.toml"),
-            "id = \"example\"\nname = \"Example\"\nversion = \"1.0.0\"\napi_version = 2\n[capabilities]\ntools = true\nfilesystem = true\n",
+            "id = \"example\"\nname = \"Example\"\nversion = \"1.0.0\"\napi_version = 4\n[capabilities]\ntools = true\nfilesystem = true\n",
         )
         .unwrap();
         fs::write(
@@ -1578,10 +1648,10 @@ mod tests {
         store
             .lock()
             .unwrap()
-            .set_extension_filesystem_roots(
-                "example",
-                &[workspace.path().to_str().unwrap().to_owned()],
-            )
+            .set_boundary_policy(&crate::store::BoundaryPolicy {
+                directory_includes: vec![workspace.path().to_str().unwrap().to_owned()],
+                ..Default::default()
+            })
             .unwrap();
         let extension = LoadedExtension::load(extension_directory.path(), store).unwrap();
         let trigger = Event::new(

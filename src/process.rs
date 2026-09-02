@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     fs::{self, File},
     io::{Read, Write},
     os::{fd::AsRawFd, unix::fs::MetadataExt, unix::process::CommandExt},
@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::store::{ProcessExecutableGrant, SharedEventStore};
+use crate::store::SharedEventStore;
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const MAX_TIMEOUT_MS: u64 = 120_000;
@@ -33,7 +33,6 @@ static PROCESS_EXECUTION_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone)]
 pub struct ProcessHost {
-    extension_id: String,
     store: SharedEventStore,
     action_enabled: Arc<AtomicBool>,
     effects: Arc<Mutex<Vec<ProcessEffect>>>,
@@ -46,13 +45,13 @@ pub struct ProcessEffect {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProcessRequest {
-    pub executable: String,
+    pub program: String,
     #[serde(default)]
     pub args: Vec<String>,
     pub cwd: String,
     pub timeout_ms: Option<u64>,
-    pub filesystem_root: Option<String>,
     #[serde(default)]
     pub filesystem_access: FilesystemAccess,
 }
@@ -91,9 +90,8 @@ impl Drop for ProcessActionGuard {
 }
 
 impl ProcessHost {
-    pub fn new(extension_id: impl Into<String>, store: SharedEventStore) -> Self {
+    pub fn new(store: SharedEventStore) -> Self {
         Self {
-            extension_id: extension_id.into(),
             store,
             action_enabled: Arc::new(AtomicBool::new(false)),
             effects: Arc::new(Mutex::new(Vec::new())),
@@ -132,10 +130,9 @@ impl ProcessHost {
         let _execution = PROCESS_EXECUTION_LOCK
             .lock()
             .map_err(|_| anyhow::anyhow!("process execution lock poisoned"))?;
-        let grant = self.executable_grant(&request.executable)?;
-        let image = verified_executable(&grant)?;
-        let (filesystem_root, root_handle, cwd) =
-            self.authorized_cwd(&request.cwd, request.filesystem_root.as_deref())?;
+        let program = self.authorized_program(&request.program)?;
+        let image = verified_executable(&program)?;
+        let (filesystem_root, root_handle, cwd) = self.authorized_cwd(&request.cwd)?;
         let timeout = Duration::from_millis(request.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
         let started = Instant::now();
         let execution = execute_sandboxed(
@@ -155,8 +152,8 @@ impl ProcessHost {
             .push(ProcessEffect {
                 event_type: "process.execution.completed".into(),
                 payload: json!({
-                    "executable": grant.alias,
-                    "executable_sha256": grant.sha256,
+                    "program": program,
+                    "program_sha256": sha256(&image),
                     "cwd": request.cwd,
                     "filesystem_root": filesystem_root,
                     "filesystem_access": request.filesystem_access,
@@ -175,65 +172,56 @@ impl ProcessHost {
         })
     }
 
-    fn executable_grant(&self, alias: &str) -> Result<ProcessExecutableGrant> {
-        let grants = self
+    fn authorized_program(&self, requested: &str) -> Result<PathBuf> {
+        let policy = self
             .store
             .lock()
             .map_err(|_| anyhow::anyhow!("event store lock poisoned"))?
-            .extension_process_executables(&self.extension_id)?;
-        grants
-            .into_iter()
-            .find(|grant| grant.alias == alias)
-            .with_context(|| format!("process executable alias '{alias}' is not granted"))
+            .boundary_policy()?;
+        resolve_program(
+            requested,
+            &policy.program_includes,
+            &policy.program_excludes,
+        )
     }
 
-    fn authorized_cwd(
-        &self,
-        requested: &str,
-        requested_root: Option<&str>,
-    ) -> Result<(PathBuf, File, PathBuf)> {
+    fn authorized_cwd(&self, requested: &str) -> Result<(PathBuf, File, PathBuf)> {
         let path = strict_absolute_path(requested)?;
         let canonical = fs::canonicalize(&path)
             .with_context(|| format!("process cwd '{}' does not exist", path.display()))?;
         if canonical != path || !canonical.is_dir() {
             bail!("process cwd must be an existing canonical directory without symbolic links");
         }
-        let roots = self
+        let policy = self
             .store
             .lock()
             .map_err(|_| anyhow::anyhow!("event store lock poisoned"))?
-            .extension_filesystem_roots(&self.extension_id)?;
-        let root = if let Some(requested_root) = requested_root {
-            let requested_root = strict_absolute_path(requested_root)?;
-            if !roots.iter().any(|root| Path::new(root) == requested_root) {
-                bail!("requested process filesystem root is not an exact extension grant");
-            }
-            if !canonical.starts_with(&requested_root) {
-                bail!("process cwd is outside the requested filesystem root");
-            }
-            requested_root
-        } else {
-            roots
-                .into_iter()
-                .map(PathBuf::from)
-                .find(|root| canonical.starts_with(root))
-                .context("process cwd is outside the extension's filesystem grants")?
-        };
+            .boundary_policy()?;
+        let includes = policy
+            .directory_includes
+            .iter()
+            .map(PathBuf::from)
+            .collect::<Vec<_>>();
+        let excludes = policy
+            .directory_excludes
+            .iter()
+            .map(PathBuf::from)
+            .collect::<Vec<_>>();
+        if !includes.iter().any(|root| canonical.starts_with(root)) {
+            bail!("process cwd is outside the global directory boundary");
+        }
+        if excludes
+            .iter()
+            .any(|path| canonical.starts_with(path) || path.starts_with(&canonical))
+        {
+            bail!("process cwd intersects a globally excluded directory");
+        }
+        let root = canonical.clone();
         let root_handle = File::from(open(
             &root,
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::empty(),
         )?);
-        let still_granted = self
-            .store
-            .lock()
-            .map_err(|_| anyhow::anyhow!("event store lock poisoned"))?
-            .extension_filesystem_roots(&self.extension_id)?
-            .into_iter()
-            .any(|granted| Path::new(&granted) == root);
-        if !still_granted {
-            bail!("process filesystem grant changed while opening the sandbox");
-        }
         Ok((root, root_handle, canonical))
     }
 }
@@ -243,48 +231,36 @@ pub fn process_backend_available() -> bool {
     Path::new("/usr/bin/bwrap").is_file() && ProcessCgroup::create().is_ok()
 }
 
-pub fn normalize_executable_grants(
-    requested: &BTreeMap<String, String>,
-) -> Result<Vec<ProcessExecutableGrant>> {
+pub fn normalize_program_paths(requested: &[String]) -> Result<Vec<String>> {
     if requested.len() > 32 {
-        bail!("at most 32 process executables may be granted");
+        bail!("at most 32 process programs may be included or excluded");
     }
     let mut paths = BTreeSet::new();
-    let mut grants = Vec::new();
-    for (alias, requested_path) in requested {
-        validate_alias(alias)?;
-        let path = strict_absolute_path(requested_path)?;
+    for requested_path in requested {
+        let path = strict_absolute_path(requested_path.trim())?;
         let canonical = fs::canonicalize(&path)
-            .with_context(|| format!("process executable '{}' does not exist", path.display()))?;
-        if !paths.insert(canonical.clone()) {
-            bail!("process executable paths must be unique");
-        }
-        let metadata = fs::metadata(&canonical)?;
+            .with_context(|| format!("process program '{}' does not exist", path.display()))?;
+        let metadata = fs::symlink_metadata(&canonical)?;
         if !metadata.is_file() || metadata.mode() & 0o111 == 0 {
             bail!(
-                "process executable '{}' is not an executable regular file",
+                "process program '{}' is not an executable regular file",
                 canonical.display()
             );
         }
         let image = read_bounded(&canonical, MAX_EXECUTABLE_BYTES)?;
         if !image.starts_with(b"\x7fELF") {
             bail!(
-                "process executable '{}' is not a native ELF image",
+                "process program '{}' is not a native ELF image",
                 canonical.display()
             );
         }
-        grants.push(ProcessExecutableGrant {
-            alias: alias.clone(),
-            path: canonical.to_string_lossy().into_owned(),
-            identity: Some(format!("{}:{}", metadata.dev(), metadata.ino())),
-            sha256: sha256(&image),
-        });
+        paths.insert(canonical.to_string_lossy().into_owned());
     }
-    Ok(grants)
+    Ok(paths.into_iter().collect())
 }
 
 fn validate_request(request: &ProcessRequest) -> Result<()> {
-    validate_alias(&request.executable)?;
+    validate_program_request(&request.program)?;
     if request.args.len() > MAX_ARGUMENTS {
         bail!("process arguments exceed the 128 argument limit");
     }
@@ -307,14 +283,16 @@ fn validate_request(request: &ProcessRequest) -> Result<()> {
     Ok(())
 }
 
-fn validate_alias(alias: &str) -> Result<()> {
-    if alias.is_empty()
-        || alias.len() > 64
-        || !alias
+fn validate_program_request(program: &str) -> Result<()> {
+    if program.is_empty() || program.len() > 4096 || program.contains('\0') {
+        bail!("process program must contain 1 to 4096 bytes without NUL");
+    }
+    if !Path::new(program).is_absolute()
+        && !program
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
     {
-        bail!("process executable aliases must use 1-64 ASCII letters, numbers, '.', '_', or '-'");
+        bail!("relative process programs must be simple executable names");
     }
     Ok(())
 }
@@ -331,16 +309,36 @@ fn strict_absolute_path(value: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn verified_executable(grant: &ProcessExecutableGrant) -> Result<Vec<u8>> {
-    let path = Path::new(&grant.path);
-    let metadata = fs::metadata(path)?;
-    let identity = format!("{}:{}", metadata.dev(), metadata.ino());
-    if grant.identity.as_deref() != Some(&identity) {
-        bail!("granted process executable changed identity; grant it again");
+fn resolve_program(requested: &str, includes: &[String], excludes: &[String]) -> Result<PathBuf> {
+    validate_program_request(requested)?;
+    let requested_path = Path::new(requested);
+    let matches = includes
+        .iter()
+        .map(PathBuf::from)
+        .filter(|path| {
+            if requested_path.is_absolute() {
+                path == requested_path
+            } else {
+                path.file_name().is_some_and(|name| name == requested)
+            }
+        })
+        .filter(|path| !excludes.iter().any(|excluded| Path::new(excluded) == path))
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [program] => Ok(program.clone()),
+        [] => bail!("process program '{requested}' is outside the global program boundary"),
+        _ => bail!("process program '{requested}' is ambiguous; use its approved absolute path"),
+    }
+}
+
+fn verified_executable(path: &Path) -> Result<Vec<u8>> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.mode() & 0o111 == 0 {
+        bail!("approved process program is no longer an executable regular file");
     }
     let image = read_bounded(path, MAX_EXECUTABLE_BYTES)?;
-    if sha256(&image) != grant.sha256 || !image.starts_with(b"\x7fELF") {
-        bail!("granted process executable changed content; grant it again");
+    if !image.starts_with(b"\x7fELF") {
+        bail!("approved process program is no longer a native ELF image");
     }
     Ok(image)
 }
@@ -657,18 +655,33 @@ mod tests {
 
     fn host(root: &Path, executable: &str) -> ProcessHost {
         let store = EventStore::open(":memory:").unwrap().shared();
-        let requested = BTreeMap::from([("test".to_owned(), executable.to_owned())]);
-        let grants = normalize_executable_grants(&requested).unwrap();
-        {
-            let mut store = store.lock().unwrap();
-            store
-                .set_extension_filesystem_roots("process", &[root.to_string_lossy().into_owned()])
-                .unwrap();
-            store
-                .set_extension_process_executables("process", &grants)
-                .unwrap();
-        }
-        ProcessHost::new("process", store)
+        store
+            .lock()
+            .unwrap()
+            .set_boundary_policy(&crate::store::BoundaryPolicy {
+                directory_includes: vec![root.to_string_lossy().into_owned()],
+                directory_excludes: Vec::new(),
+                program_includes: normalize_program_paths(&[executable.to_owned()]).unwrap(),
+                program_excludes: Vec::new(),
+            })
+            .unwrap();
+        ProcessHost::new(store)
+    }
+
+    #[test]
+    fn global_program_exclusions_win_and_names_must_be_unambiguous() {
+        let includes = vec!["/usr/bin/git".into(), "/opt/tools/git".into()];
+        assert!(
+            resolve_program("git", &includes, &[])
+                .unwrap_err()
+                .to_string()
+                .contains("ambiguous")
+        );
+        assert!(resolve_program("/usr/bin/git", &includes, &["/usr/bin/git".into()]).is_err());
+        assert_eq!(
+            resolve_program("/usr/bin/git", &includes, &[]).unwrap(),
+            PathBuf::from("/usr/bin/git")
+        );
     }
 
     #[test]
@@ -680,25 +693,19 @@ mod tests {
         fs::copy("/usr/bin/printf", &executable).unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
         let host = host(root.path(), executable.to_str().unwrap());
-        fs::OpenOptions::new()
-            .append(true)
-            .open(&executable)
-            .unwrap()
-            .write_all(b"changed")
-            .unwrap();
+        fs::write(&executable, b"changed").unwrap();
         let _guard = host.begin_action().unwrap();
         assert!(
             host.run(ProcessRequest {
-                executable: "test".into(),
+                program: "printf".into(),
                 args: vec![],
                 cwd: root.path().to_string_lossy().into_owned(),
                 timeout_ms: None,
-                filesystem_root: None,
                 filesystem_access: FilesystemAccess::ReadWrite,
             })
             .unwrap_err()
             .to_string()
-            .contains("changed content")
+            .contains("no longer a native ELF")
         );
     }
 
@@ -712,11 +719,10 @@ mod tests {
         let _guard = host.begin_action().unwrap();
         let result = host
             .run(ProcessRequest {
-                executable: "test".into(),
+                program: "yes".into(),
                 args: vec![],
                 cwd: root.path().to_string_lossy().into_owned(),
                 timeout_ms: Some(5_000),
-                filesystem_root: None,
                 filesystem_access: FilesystemAccess::ReadWrite,
             })
             .unwrap();
@@ -735,14 +741,13 @@ mod tests {
         let _guard = host.begin_action().unwrap();
         let result = host
             .run(ProcessRequest {
-                executable: "test".into(),
+                program: "bash".into(),
                 args: vec![
                     "-c".into(),
                     "sleep 10 & grep NSpid /proc/$!/status > child.pid; wait".into(),
                 ],
                 cwd: root.path().to_string_lossy().into_owned(),
                 timeout_ms: Some(100),
-                filesystem_root: None,
                 filesystem_access: FilesystemAccess::ReadWrite,
             })
             .unwrap();
@@ -761,11 +766,10 @@ mod tests {
         let _guard = host.begin_action().unwrap();
         let result = host
             .run(ProcessRequest {
-                executable: "test".into(),
+                program: "sleep".into(),
                 args: vec!["10".into()],
                 cwd: root.path().to_string_lossy().into_owned(),
                 timeout_ms: Some(30),
-                filesystem_root: None,
                 filesystem_access: FilesystemAccess::ReadWrite,
             })
             .unwrap();
@@ -783,7 +787,7 @@ mod tests {
         let _guard = host.begin_action().unwrap();
         let result = host
             .run(ProcessRequest {
-                executable: "test".into(),
+                program: "git".into(),
                 args: vec![
                     "--no-pager".into(),
                     "--no-optional-locks".into(),
@@ -792,7 +796,6 @@ mod tests {
                 ],
                 cwd: root.to_string_lossy().into_owned(),
                 timeout_ms: Some(5_000),
-                filesystem_root: Some(root.to_string_lossy().into_owned()),
                 filesystem_access: FilesystemAccess::ReadOnly,
             })
             .unwrap();
@@ -811,11 +814,10 @@ mod tests {
         let _guard = host.begin_action().unwrap();
         let result = host
             .run(ProcessRequest {
-                executable: "test".into(),
+                program: "touch".into(),
                 args: vec![file.to_string_lossy().into_owned()],
                 cwd: root.path().to_string_lossy().into_owned(),
                 timeout_ms: Some(5_000),
-                filesystem_root: Some(root.path().to_string_lossy().into_owned()),
                 filesystem_access: FilesystemAccess::ReadOnly,
             })
             .unwrap();
@@ -835,11 +837,10 @@ mod tests {
         let _guard = host.begin_action().unwrap();
         let result = host
             .run(ProcessRequest {
-                executable: "test".into(),
+                program: "cat".into(),
                 args: vec![outside.path().to_string_lossy().into_owned()],
                 cwd: root.path().to_string_lossy().into_owned(),
                 timeout_ms: Some(5_000),
-                filesystem_root: None,
                 filesystem_access: FilesystemAccess::ReadWrite,
             })
             .unwrap();
@@ -857,11 +858,10 @@ mod tests {
         let _guard = host.begin_action().unwrap();
         let result = host
             .run(ProcessRequest {
-                executable: "test".into(),
+                program: "env".into(),
                 args: vec![],
                 cwd: root.path().to_string_lossy().into_owned(),
                 timeout_ms: Some(5_000),
-                filesystem_root: None,
                 filesystem_access: FilesystemAccess::ReadWrite,
             })
             .unwrap();
@@ -881,11 +881,10 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let host = host(root.path(), "/usr/bin/printf");
         let request = || ProcessRequest {
-            executable: "test".into(),
+            program: "printf".into(),
             args: vec!["%s".into(), ";$(touch escaped)".into()],
             cwd: root.path().to_string_lossy().into_owned(),
             timeout_ms: Some(5_000),
-            filesystem_root: None,
             filesystem_access: FilesystemAccess::ReadWrite,
         };
         assert!(
