@@ -235,7 +235,7 @@ pub fn normalize_program_paths(requested: &[String]) -> Result<Vec<String>> {
     for requested_path in requested {
         let requested_path = requested_path.trim();
         boundary::validate_program_pattern(requested_path)?;
-        if boundary::has_wildcards(requested_path) {
+        if boundary::has_wildcards(requested_path) || !requested_path.contains('/') {
             paths.insert(requested_path.to_owned());
             continue;
         }
@@ -690,6 +690,14 @@ mod tests {
             })
             .unwrap();
         ProcessHost::new(store)
+    }
+
+    #[test]
+    fn program_pattern_normalization_accepts_basenames() {
+        assert_eq!(
+            normalize_program_paths(&["*".into(), "rm".into()]).unwrap(),
+            vec!["*", "rm"]
+        );
     }
 
     #[test]
