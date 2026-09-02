@@ -168,10 +168,19 @@ struct RegisteredRoute {
     handler: RegistryKey,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RegisteredHome {
+    path: String,
+    #[serde(default)]
+    icon: Option<String>,
+}
+
 struct LuaState {
     lua: Lua,
     instruction_budget: Arc<AtomicU64>,
     routes: Vec<RegisteredRoute>,
+    home: Option<RegisteredHome>,
     tools: Vec<RegisteredTool>,
     context_hooks: Vec<RegisteredHook>,
     filesystem_host: Option<FilesystemHost>,
@@ -236,6 +245,7 @@ impl LoadedExtension {
             lua.globals().raw_remove(global)?;
         }
         let registered_routes = Arc::new(Mutex::new(Vec::new()));
+        let registered_home = Arc::new(Mutex::new(None));
         let registered_tools = Arc::new(Mutex::new(Vec::new()));
         let context_hooks = Arc::new(Mutex::new(Vec::new()));
         let filesystem_host = manifest
@@ -326,15 +336,31 @@ impl LoadedExtension {
         if manifest.capabilities.web {
             let web = lua.create_table()?;
             let routes = registered_routes.clone();
+            let home = registered_home.clone();
+            web.set(
+                "home",
+                lua.create_function(move |lua, value: LuaValue| {
+                    let value: RegisteredHome = lua.from_value(value)?;
+                    validate_web_path(&value.path).map_err(mlua::Error::external)?;
+                    if let Some(icon) = &value.icon {
+                        validate_web_path(icon).map_err(mlua::Error::external)?;
+                    }
+                    let mut registered = home.lock().map_err(|_| {
+                        mlua::Error::external("extension home registry lock poisoned")
+                    })?;
+                    if registered.replace(value).is_some() {
+                        return Err(mlua::Error::external(
+                            "extension may register only one home page",
+                        ));
+                    }
+                    Ok(())
+                })?,
+            )?;
             web.set(
                 "route",
                 lua.create_function(
                     move |lua, (method, path, handler): (String, String, Function)| {
-                        if !path.starts_with('/') || path.contains("..") {
-                            return Err(mlua::Error::external(
-                                "extension route must be an absolute namespaced path",
-                            ));
-                        }
+                        validate_web_path(&path).map_err(mlua::Error::external)?;
                         routes
                             .lock()
                             .map_err(|_| mlua::Error::external("route registry lock poisoned"))?
@@ -384,6 +410,10 @@ impl LoadedExtension {
             .map_err(|_| anyhow::anyhow!("extension route registry lock poisoned"))?
             .drain(..)
             .collect();
+        let home = registered_home
+            .lock()
+            .map_err(|_| anyhow::anyhow!("extension home registry lock poisoned"))?
+            .take();
         let tools: Vec<RegisteredTool> = registered_tools
             .lock()
             .map_err(|_| anyhow::anyhow!("extension tool registry lock poisoned"))?
@@ -431,6 +461,7 @@ impl LoadedExtension {
                 lua,
                 instruction_budget,
                 routes,
+                home,
                 tools,
                 context_hooks,
                 filesystem_host,
@@ -443,6 +474,14 @@ impl LoadedExtension {
 
     pub fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::Acquire)
+    }
+
+    pub fn home_registration(&self) -> Option<(String, Option<String>)> {
+        let state = self.state.lock().ok()?;
+        state
+            .home
+            .as_ref()
+            .map(|home| (home.path.clone(), home.icon.clone()))
     }
 
     pub fn set_enabled(&self, enabled: bool) -> Result<()> {
@@ -810,6 +849,7 @@ impl ExtensionManager {
                         )
                     })
                     .unwrap_or_default();
+                let home = extension.home_registration();
                 let mut provides = Vec::new();
                 if extension
                     .manifest
@@ -878,12 +918,15 @@ impl ExtensionManager {
                     installation,
                     filesystem_roots,
                     process_executables,
-                    main_page: extension
-                        .manifest
-                        .web
+                    main_page: home
                         .as_ref()
-                        .and_then(|web| web.static_dir.as_ref())
-                        .map(|_| format!("/extensions/{}/", extension.manifest.id)),
+                        .map(|_| format!("/apps/{}", extension.manifest.id)),
+                    frame_page: home
+                        .as_ref()
+                        .map(|(path, _)| format!("/extensions/{}{}", extension.manifest.id, path)),
+                    icon: home.and_then(|(_, icon)| {
+                        icon.map(|path| format!("/extensions/{}{}", extension.manifest.id, path))
+                    }),
                 }
             })
             .collect::<Vec<_>>();
@@ -905,6 +948,8 @@ pub struct ExtensionSummary {
     pub filesystem_roots: Vec<String>,
     pub process_executables: Vec<crate::store::ProcessExecutableGrant>,
     pub main_page: Option<String>,
+    pub frame_page: Option<String>,
+    pub icon: Option<String>,
 }
 
 fn create_search_api(lua: &Lua, host: SearchHost) -> mlua::Result<mlua::Table> {
@@ -1256,6 +1301,17 @@ fn collect_static_files(
     Ok(size)
 }
 
+fn validate_web_path(path: &str) -> Result<()> {
+    if !path.starts_with('/')
+        || path.contains("..")
+        || path.contains('\\')
+        || path.chars().any(char::is_control)
+    {
+        bail!("extension web paths must be absolute, namespaced, and traversal-free");
+    }
+    Ok(())
+}
+
 fn validate_hook_name(name: &str) -> Result<()> {
     if name.is_empty()
         || !name.chars().all(|character| {
@@ -1344,6 +1400,34 @@ mod tests {
             match_route("/api/sessions/:id/messages", "/api/sessions/abc/messages").unwrap();
         assert_eq!(params.get("id").map(String::as_str), Some("abc"));
         assert!(match_route("/one", "/two").is_none());
+    }
+
+    #[test]
+    fn registered_home_and_icon_are_exposed_through_the_app_shell() {
+        let directory = tempfile::tempdir().unwrap();
+        let extension = directory.path().join("example");
+        fs::create_dir_all(extension.join("web")).unwrap();
+        fs::write(
+            extension.join("extension.toml"),
+            "id = \"example\"\nname = \"Example\"\nversion = \"1.0.0\"\napi_version = 2\n[capabilities]\nweb = true\n[web]\nstatic_dir = \"web\"\n",
+        )
+        .unwrap();
+        fs::write(
+            extension.join("extension.lua"),
+            "habibi.web.home({ path = \"/\", icon = \"/icon.svg\" })\n",
+        )
+        .unwrap();
+        fs::write(extension.join("web/index.html"), "home").unwrap();
+        fs::write(extension.join("web/icon.svg"), "<svg></svg>").unwrap();
+        let store = EventStore::open(":memory:").unwrap().shared();
+        let manager = ExtensionManager::load(directory.path(), store).unwrap();
+        let summary = manager.summaries().pop().unwrap();
+        assert_eq!(summary.main_page.as_deref(), Some("/apps/example"));
+        assert_eq!(summary.frame_page.as_deref(), Some("/extensions/example/"));
+        assert_eq!(
+            summary.icon.as_deref(),
+            Some("/extensions/example/icon.svg")
+        );
     }
 
     #[cfg(target_os = "linux")]

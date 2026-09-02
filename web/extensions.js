@@ -1,5 +1,23 @@
 const list = document.querySelector("#extension-list");
 
+function initials(name) {
+  return name.split(/\s+/).map(part => part[0]).join("").slice(0, 2).toUpperCase();
+}
+
+function extensionLogo(extension) {
+  const visual = document.createElement("span");
+  visual.className = "extension-logo";
+  if (extension.icon) {
+    const image = document.createElement("img");
+    image.src = extension.icon;
+    image.alt = "";
+    visual.append(image);
+  } else {
+    visual.textContent = initials(extension.name);
+  }
+  return visual;
+}
+
 async function loadExtensions() {
   const response = await fetch("/api/extensions");
   if (!response.ok) throw new Error(`Could not load extensions (${response.status})`);
@@ -11,6 +29,8 @@ function extensionCard(extension) {
   const card = document.createElement("article");
   card.className = `extension-card${extension.enabled ? "" : " disabled"}`;
 
+  const identity = document.createElement("div");
+  identity.className = "extension-identity";
   const details = document.createElement("div");
   const title = document.createElement("div");
   title.className = "extension-title";
@@ -126,7 +146,8 @@ function extensionCard(extension) {
     }
   };
   actions.append(toggle);
-  card.append(details, actions);
+  identity.append(extensionLogo(extension), details);
+  card.append(identity, actions);
   return card;
 }
 

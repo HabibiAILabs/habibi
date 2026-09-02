@@ -45,6 +45,7 @@ pub fn router(state: WebState) -> Router {
     Router::new()
         .route("/", get(home_page))
         .route("/extensions", get(extensions_page))
+        .route("/apps/{extension_id}", get(extension_app_page))
         .route("/events", get(events_page))
         .route("/logs", get(logs_page))
         .route("/trace", get(trace_page))
@@ -52,6 +53,8 @@ pub fn router(state: WebState) -> Router {
         .route("/assets/habibi-logo.svg", get(logo_asset))
         .route("/assets/core.css", get(core_css_asset))
         .route("/assets/extensions.js", get(extensions_js_asset))
+        .route("/assets/home.js", get(home_js_asset))
+        .route("/assets/app.js", get(app_js_asset))
         .route("/assets/events.js", get(events_js_asset))
         .route("/assets/logs.js", get(logs_js_asset))
         .route("/assets/trace.js", get(trace_js_asset))
@@ -104,6 +107,10 @@ async fn extensions_page() -> Response {
     html_response(include_str!("../web/extensions.html"))
 }
 
+async fn extension_app_page() -> Response {
+    html_response(include_str!("../web/app.html"))
+}
+
 async fn events_page() -> Response {
     html_response(include_str!("../web/events.html"))
 }
@@ -132,6 +139,20 @@ async fn extensions_js_asset() -> Response {
     asset_response(
         "text/javascript; charset=utf-8",
         include_bytes!("../web/extensions.js"),
+    )
+}
+
+async fn home_js_asset() -> Response {
+    asset_response(
+        "text/javascript; charset=utf-8",
+        include_bytes!("../web/home.js"),
+    )
+}
+
+async fn app_js_asset() -> Response {
+    asset_response(
+        "text/javascript; charset=utf-8",
+        include_bytes!("../web/app.js"),
     )
 }
 

@@ -105,7 +105,9 @@ mise exec -- cargo run
 Habibi uses quantized BGE Small English v1.5 through local CPU ONNX inference. The verified model is cached under `$XDG_CACHE_HOME/habibi/embeddings` (or `~/.cache/habibi/embeddings`). Set `HABIBI_EMBEDDING_DIR` to use an existing verified model directory.
 
 Then open `http://127.0.0.1:8787`. The home page presents Habibi itself; extension discovery
-and enable/disable controls live at `/extensions`. The interactive causal view is at `/trace`;
+and enable/disable controls live at `/extensions`. Extensions may register application home pages
+and icons; enabled apps appear as large homepage cards and open inside Habibi's shared `/apps` shell.
+The interactive causal view is at `/trace`;
 domain history is at `/events`, operational execution at `/logs`, and usage totals at `/stats`.
 
 Extensions are installed separately from the core runtime. Install the official packages you need,

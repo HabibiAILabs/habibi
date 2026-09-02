@@ -6,12 +6,8 @@
     <p class="eyebrow">ONE CONTINUOUS EVENT STREAM</p>
     <h1>Habibi</h1>
     <p class="lede">A local, context-aware AI runtime shaped by extensions.</p>
-    <nav class="home-actions">
-      <a class="primary" href="/trace?view=graph">Open live graph</a>
-      <a class="secondary" href="/trace">Trace</a>
-      <a class="secondary" href="/extensions">Extensions</a>
-      <a class="secondary" href="/events">Events</a>
-    </nav>
+    <nav id="home-extension-actions" class="home-extension-actions" aria-label="Extension apps"></nav>
+    <p id="home-extension-status" class="muted" role="status">Loading apps…</p>
   </div>
 </section>
 <header class="topbar"><a class="wordmark" href="/"><img src="/assets/habibi-logo.svg" alt="">Habibi</a><nav class="topnav"><a href="/trace?view=graph">Live graph</a><a href="/trace" aria-current="page">Trace</a><a href="/events">Events</a><a href="/logs">Logs</a><a href="/stats">Stats</a><a href="/extensions">Extensions</a></nav></header>
@@ -49,4 +45,4 @@
     <aside id="trace-inspector" class="trace-inspector"><div class="trace-empty"><img src="/assets/habibi-logo.svg" alt=""><p>Select a node to inspect its complete data.</p></div></aside>
   </section>
 </main>
-<script type="module" src="/assets/trace.js"></script></body></html>
+<script type="module" src="/assets/home.js"></script><script type="module" src="/assets/trace.js"></script></body></html>

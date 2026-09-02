@@ -86,6 +86,18 @@ A response may contain `json`, or `body` with an optional `content_type`.
 Static files configured by `web.static_dir` are served when no dynamic GET route matches.
 Paths cannot escape the configured directory.
 
+An extension may designate one optional application home page and icon during initialization:
+
+```lua
+habibi.web.home({ path = "/", icon = "/icon.svg" })
+```
+
+Both paths are extension-relative absolute paths. A registered home appears as an application card
+on Habibi's homepage and as an **Open** action on the Extensions page. Habibi opens it inside the
+shared `/apps/{extension-id}` shell so global navigation remains visible. Extensions are trusted,
+same-origin applications; the shell uses an iframe for layout isolation, not a security boundary.
+Extensions without a registered icon receive a generated initials mark.
+
 ## Model tools and actions
 
 Extensions register model-callable tools in their own namespace:
