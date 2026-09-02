@@ -23,6 +23,26 @@ pub fn validate_pattern(pattern: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn validate_program_pattern(pattern: &str) -> Result<()> {
+    if pattern.contains('/') {
+        return validate_pattern(pattern);
+    }
+    if pattern.is_empty()
+        || pattern.contains('\0')
+        || pattern.contains('\\')
+        || matches!(pattern, "." | "..")
+    {
+        bail!(
+            "program patterns must be basenames, '*', or absolute paths without NUL or backslashes"
+        );
+    }
+    Ok(())
+}
+
+pub fn program_name_matches(pattern: &str, name: &str) -> bool {
+    !pattern.contains('/') && wildcard_match(pattern.as_bytes(), name.as_bytes())
+}
+
 pub fn path_allowed(
     path: &Path,
     includes: &[String],
@@ -70,7 +90,11 @@ fn pattern_matches(pattern: &str, value: &str, directory: bool) -> bool {
         return true;
     }
     if !directory {
-        return wildcard_match(pattern.as_bytes(), value.as_bytes());
+        return wildcard_match(pattern.as_bytes(), value.as_bytes())
+            || Path::new(value).file_name().is_some_and(|name| {
+                name.to_str()
+                    .is_some_and(|name| program_name_matches(pattern, name))
+            });
     }
     let path = Path::new(value);
     path.ancestors().any(|ancestor| {
@@ -131,10 +155,22 @@ mod tests {
     }
 
     #[test]
-    fn wildcard_program_rules_match_full_paths() {
+    fn wildcard_program_rules_match_paths_and_basenames() {
         assert!(path_allowed(
             Path::new("/usr/bin/git"),
             &["/usr/bin/git*".into()],
+            &["*".into()],
+            false
+        ));
+        assert!(!path_allowed(
+            Path::new("/usr/bin/rm"),
+            &["*".into()],
+            &["rm".into()],
+            false
+        ));
+        assert!(path_allowed(
+            Path::new("/usr/bin/rm"),
+            &["rm".into()],
             &["*".into()],
             false
         ));

@@ -234,7 +234,7 @@ pub fn normalize_program_paths(requested: &[String]) -> Result<Vec<String>> {
     let mut paths = BTreeSet::new();
     for requested_path in requested {
         let requested_path = requested_path.trim();
-        boundary::validate_pattern(requested_path)?;
+        boundary::validate_program_pattern(requested_path)?;
         if boundary::has_wildcards(requested_path) {
             paths.insert(requested_path.to_owned());
             continue;
@@ -324,7 +324,7 @@ fn resolve_program(requested: &str, includes: &[String], excludes: &[String]) ->
     }
     let mut candidates = BTreeSet::new();
     for pattern in includes {
-        if pattern == "*" {
+        if boundary::program_name_matches(pattern, requested) {
             for directory in ["/usr/local/bin", "/usr/bin", "/bin"] {
                 candidates.insert(Path::new(directory).join(requested));
             }

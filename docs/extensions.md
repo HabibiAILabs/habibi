@@ -297,10 +297,11 @@ local outcome = habibi.process.run({
 })
 ```
 
-Users configure global program include/exclude patterns on the Settings page. Exact entries are
-canonical native ELF files; patterns support `*` and `?`. A basename is accepted only when it resolves
-to one allowed candidate from an explicit entry, a concrete pattern directory, or the fixed system
-locations `/usr/local/bin`, `/usr/bin`, and `/bin` under `*`. Absolute paths remain available. Current program bytes are copied into sealed memory before launch. There is no
+Users configure global program include/exclude path or basename patterns on the Settings page;
+patterns support `*` and `?`. A basename is accepted only when it resolves to one allowed candidate
+from a basename rule, an explicit path, a concrete pattern directory, or the fixed system locations
+`/usr/local/bin`, `/usr/bin`, and `/bin` under `*`. Absolute paths remain available. For example,
+program include `*` with exclude `rm` permits system programs except executables named `rm`. Current program bytes are copied into sealed memory before launch. There is no
 ambient PATH lookup, implicit shell evaluation, script/shebang support, caller environment, stdin,
 detached mode, or network. Approved programs may launch helpers; approving an interpreter or shell
 grants its normal argv authority.

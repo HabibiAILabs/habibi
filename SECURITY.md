@@ -35,8 +35,9 @@ patch arguments remain present in durable action events and exact model logs.
 ## Process execution
 
 Process execution is Linux-only and default-deny. Core settings contain global include and exclude
-patterns for native ELF programs. The same specificity rule applies. Extensions may request an
-unambiguous basename resolved from deterministic approved locations, or an approved absolute path. Habibi reads the current approved image into sealed memory without a shell,
+path or basename patterns for native ELF programs. The same specificity rule applies, so basename
+exclude `rm` overrides include `*`. Extensions may request an unambiguous basename resolved from
+deterministic approved locations, or an approved absolute path. Habibi reads the current approved image into sealed memory without a shell,
 clears the environment, disables network access, mounts the approved working directory, bounds
 arguments, time, and output, and kills the complete delegated cgroup after every run. The API is
 available only during registered tool actions and fails closed without Bubblewrap or delegated
