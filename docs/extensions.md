@@ -177,8 +177,9 @@ end)
 A context hook returns one extension-formatted UTF-8 `content` string. Core does not assign message
 roles, fetch source events, or reinterpret its contents. It places every non-empty contribution in
 a labeled, delimited section of the invocation's system message. The one immutable current event is
-the invocation's only user message. Each hook and the combined extension context are bounded to
-2 MiB. User-visible effects are performed by model tools.
+the invocation's only user message. Each hook is bounded to 256 KiB and combined extension context
+to 512 KiB. Serialized durable tool results are limited to 256 KiB. User-visible effects are
+performed by model tools.
 
 All action requests, results, tool effects, batch barriers, and operational logs share the
 trigger's correlation ID and are connected through causation IDs and result references.
@@ -266,7 +267,8 @@ local changed = habibi.files.patch({
 Available host operations are `list`, `read`, `search`, `write`, `patch`, `mkdir`, `move`, and
 `delete`. Paths must be absolute, remain beneath a globally included canonical root and outside exclusions, and contain no `.` or
 `..` components. Capability-based directory handles confine actual reads and mutations; symbolic
-links and special files are not followed. Reads and writes are limited to 2 MiB. Search is bounded
+links and special files are not followed. Host reads and writes are limited to 2 MiB; model-facing
+extensions must return bounded views. Search is bounded
 by query length, depth, entries, files, bytes, matches, and output preview size.
 
 Creating a file requires a missing destination. Replacing or patching an existing file requires the

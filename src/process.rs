@@ -26,7 +26,7 @@ const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const MAX_TIMEOUT_MS: u64 = 120_000;
 const MAX_ARGUMENTS: usize = 128;
 const MAX_ARGUMENT_BYTES: usize = 64 * 1024;
-const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
+const MAX_OUTPUT_BYTES: usize = 32 * 1024;
 const MAX_EXECUTABLE_BYTES: u64 = 256 * 1024 * 1024;
 // chisle: one process globally; use a bounded semaphore if parallel workloads become necessary.
 static PROCESS_EXECUTION_LOCK: Mutex<()> = Mutex::new(());

@@ -22,6 +22,8 @@ use crate::{
     tool::{ToolCall, ToolCatalog, ToolContext, ToolRuntime, domain_tool_name},
 };
 
+const MAX_TOOL_RESULT_BYTES: usize = 256 * 1024;
+
 pub struct Engine {
     store: SharedEventStore,
     model: ModelClient,
@@ -763,7 +765,14 @@ impl Engine {
                         )
                     } else {
                         let effect_ids = effects.iter().map(|effect| effect.id).collect::<Vec<_>>();
-                        if let Some(error) = execution.failure {
+                        let failure = execution.failure.or_else(|| {
+                            oversized_tool_result(&execution.result).then(|| {
+                                format!(
+                                    "tool result exceeds the {MAX_TOOL_RESULT_BYTES}-byte durable result limit"
+                                )
+                            })
+                        });
+                        if let Some(error) = failure {
                             (
                                 Event::new(
                                     "action.result.failed",
@@ -1044,6 +1053,10 @@ fn validate_calls(
     Ok(errors)
 }
 
+fn oversized_tool_result(result: &Value) -> bool {
+    serde_json::to_vec(result).map_or(true, |encoded| encoded.len() > MAX_TOOL_RESULT_BYTES)
+}
+
 fn plain_text_validation_error(
     content: &str,
     tool_call_count: usize,
@@ -1190,6 +1203,14 @@ mod tests {
             arguments,
             argument_error: None,
         }
+    }
+
+    #[test]
+    fn durable_tool_results_have_an_authoritative_size_limit() {
+        assert!(!oversized_tool_result(&json!({ "content": "small" })));
+        assert!(oversized_tool_result(&json!({
+            "content": "x".repeat(MAX_TOOL_RESULT_BYTES)
+        })));
     }
 
     #[test]

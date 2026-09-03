@@ -4,7 +4,8 @@ use serde_json::{Value, json};
 
 use crate::{event::Event, store::SharedEventStore};
 
-pub const MAX_CONTEXT_BYTES: usize = 2 * 1024 * 1024;
+pub const MAX_CONTEXT_BYTES: usize = 512 * 1024;
+const MAX_CONTEXT_CONTRIBUTION_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -22,8 +23,8 @@ pub struct CompiledContext {
 
 pub fn compile_context(contribution: &ContextContribution) -> Result<CompiledContext> {
     let rendered_bytes = contribution.content.len();
-    if rendered_bytes > MAX_CONTEXT_BYTES {
-        bail!("context hook rendered more than 2 MiB");
+    if rendered_bytes > MAX_CONTEXT_CONTRIBUTION_BYTES {
+        bail!("context hook rendered more than 256 KiB");
     }
     Ok(CompiledContext {
         content: contribution.content.clone(),
@@ -51,7 +52,7 @@ pub fn system_context(
             content
         ));
         if rendered.len() > MAX_CONTEXT_BYTES {
-            bail!("combined extension context rendered more than 2 MiB");
+            bail!("combined extension context rendered more than 512 KiB");
         }
     }
     for item in feedback {
@@ -59,7 +60,7 @@ pub fn system_context(
         rendered.push_str(item);
         rendered.push_str("\n</engine-validation>\n");
         if rendered.len() > MAX_CONTEXT_BYTES {
-            bail!("combined system context rendered more than 2 MiB");
+            bail!("combined system context rendered more than 512 KiB");
         }
     }
     Ok(rendered)
@@ -90,6 +91,15 @@ mod tests {
         .unwrap();
         assert_eq!(compiled.content, "formatted by extension");
         assert_eq!(compiled.rendered_bytes, 22);
+    }
+
+    #[test]
+    fn rejects_oversized_extension_context_before_provider_invocation() {
+        let error = compile_context(&ContextContribution {
+            content: "x".repeat(MAX_CONTEXT_CONTRIBUTION_BYTES + 1),
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("256 KiB"));
     }
 
     #[test]

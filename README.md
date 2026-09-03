@@ -117,7 +117,7 @@ then start Habibi:
 
 ```sh
 mise exec -- cargo run -- install https://github.com/HabibiAILabs/extensions.git --subdir chat
-mise exec -- cargo run -- install https://github.com/HabibiAILabs/extensions.git --subdir process
+mise exec -- cargo run -- install https://github.com/HabibiAILabs/extensions.git --subdir essentials
 mise exec -- cargo run -- install https://github.com/HabibiAILabs/extensions.git --subdir git
 mise exec -- cargo run -- install https://github.com/HabibiAILabs/extensions.git --subdir memory
 mise exec -- cargo run -- install https://github.com/HabibiAILabs/extensions.git --subdir habibi-docs
@@ -130,7 +130,7 @@ You can also install a local checkout:
 
 ```sh
 mise exec -- cargo run -- install ../habibi-extensions --subdir chat
-mise exec -- cargo run -- install ../habibi-extensions --subdir process
+mise exec -- cargo run -- install ../habibi-extensions --subdir essentials
 mise exec -- cargo run -- install ../habibi-extensions --subdir git
 mise exec -- cargo run -- install ../habibi-extensions --subdir memory
 mise exec -- cargo run -- install ../habibi-extensions --subdir habibi-docs
@@ -228,18 +228,19 @@ GET    /extensions/chat/api/preferences
 PUT    /extensions/chat/api/preferences
 ```
 
-## Process extension
+## Essentials extension
 
-The Linux-only Process extension runs globally approved native programs without implicit shell
-evaluation. Core resolves a basename only when it identifies one included program, executes current
-verified ELF bytes from sealed memory inside Bubblewrap namespaces, removes network and ambient
-environment access, mounts only the approved working directory, bounds output/time, and kills the
-complete delegated cgroup afterward. Configure directory and program include/exclude lists on
-`/settings`; the most specific wildcard rule wins and includes win ties. Arguments and returned output are durable; never use process tools for secrets.
+The Linux-only Essentials extension provides bounded `read`, `edit`, `find`, `grep`, `ls`, and `bash`
+tools. Filesystem operations use core's no-follow, hash-checked, atomic host API. Commands execute
+current verified ELF bytes from sealed memory inside Bubblewrap namespaces, without network or ambient
+environment access, with only the approved working directory mounted. Process output, file reads,
+directory listings, time, and delegated cgroups are bounded. Configure global directory and program
+patterns on `/settings`; the most specific rule wins and includes win ties. Bash may launch helpers
+inside its sandbox, so grant it deliberately and never use tools for secrets.
 
 ## Git extension
 
-Git `0.1` provides read-only status, diff, log, and show tools through Process. Each repository must
+Git `0.2` provides read-only status, diff, log, and show tools through the core process host. Each repository must
 be an exact filesystem grant and is mounted read-only. Git hooks, fsmonitor, pagers, optional locks,
 external diff/textconv, signatures, networking, and submodule traversal are disabled where relevant.
 
