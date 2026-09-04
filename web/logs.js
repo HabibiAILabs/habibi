@@ -1,4 +1,5 @@
 import { renderMarkdown } from "/assets/markdown.js";
+import { renderRecord } from "/assets/record-format.js";
 
 const form = document.querySelector("#log-filters");
 const list = document.querySelector("#log-list");
@@ -90,7 +91,8 @@ function logCard(log) {
   article.append(header, metadata, links);
   const structured = structuredModelView(log);
   if (structured) article.append(structured);
-  article.append(rawDetails(log));
+  const details = rawDetails(log);
+  if (details) article.append(details);
   return article;
 }
 
@@ -180,7 +182,7 @@ function structuredResponse(payload) {
       card.className = "model-tool-call";
       const title = document.createElement("strong");
       title.textContent = call.name || "unknown";
-      card.append(title, jsonBlock(call.arguments));
+      card.append(title, renderRecord(call.arguments));
       calls.append(card);
     }
     section.append(calls);
@@ -216,12 +218,12 @@ function inputItem(item, index) {
   const text = inputText(item);
   if (text) {
     try {
-      card.append(jsonBlock(JSON.parse(text)));
+      card.append(renderRecord(JSON.parse(text)));
     } catch {
       card.append(renderMarkdown(text));
     }
   } else {
-    card.append(jsonBlock(item));
+    card.append(renderRecord(item));
   }
   return card;
 }
@@ -270,14 +272,9 @@ function disclosure(label, open = false) {
 }
 
 function rawDetails(log) {
-  const details = disclosure(
-    log.name === "model.invocation.started"
-      ? "Raw model request log"
-      : log.name === "model.invocation.completed"
-        ? "Raw model response and usage"
-        : "Raw log payload",
-  );
-  details.append(jsonBlock(log.payload));
+  if (log.name.startsWith("model.invocation.")) return null;
+  const details = disclosure("Log details");
+  details.append(renderRecord(log.payload));
   return details;
 }
 

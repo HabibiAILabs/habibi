@@ -84,6 +84,7 @@ pub fn router(state: WebState) -> Router {
         .route("/assets/memory-graph.js", get(memory_graph_js_asset))
         .route("/assets/vgpu-LICENSE.txt", get(vgpu_license_asset))
         .route("/assets/markdown.js", get(markdown_js_asset))
+        .route("/assets/record-format.js", get(record_format_js_asset))
         .route("/assets/stats.js", get(stats_js_asset))
         .route("/api/events", get(list_events))
         .route("/api/event-graph", get(event_graph))
@@ -268,6 +269,13 @@ async fn markdown_js_asset() -> Response {
     asset_response(
         "text/javascript; charset=utf-8",
         include_bytes!("../web/markdown.js"),
+    )
+}
+
+async fn record_format_js_asset() -> Response {
+    asset_response(
+        "text/javascript; charset=utf-8",
+        include_bytes!("../web/record-format.js"),
     )
 }
 

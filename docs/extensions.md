@@ -174,7 +174,8 @@ habibi.context.register("example-history", function(trigger)
 end)
 ```
 
-A context hook returns one extension-formatted UTF-8 `content` string. Core does not assign message
+A context hook returns one extension-formatted UTF-8 `content` string. Context should normally be
+readable Markdown; use JSON only when its exact structure is necessary. Core does not assign message
 roles, fetch source events, or reinterpret its contents. It places every non-empty contribution in
 a labeled, delimited section of the invocation's system message. The one immutable current event is
 the invocation's only user message. Each hook is bounded to 256 KiB and combined extension context

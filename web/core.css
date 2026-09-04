@@ -124,6 +124,19 @@ pre { max-height: 520px; overflow: auto; border-radius: 10px; padding: 14px; bac
 .model-summary-item strong { display: block; margin-top: 3px; font-size: 13px; }
 .model-tool-call { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
 .model-tool-call > strong { color: var(--green); font: 12px ui-monospace, monospace; }
+.record-fields { display: grid; grid-template-columns: minmax(120px, max-content) minmax(0, 1fr); gap: 7px 16px; margin: 10px 0; }
+.record-fields dt { color: var(--muted); font-size: 12px; font-weight: 700; }
+.record-fields dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.record-fields .record-fields { grid-column: 1 / -1; margin: 4px 0 8px 12px; padding-left: 12px; border-left: 1px solid var(--line); }
+.record-array { display: grid; gap: 7px; margin: 0; padding-left: 20px; }
+.record-array > li::marker { color: var(--muted); }
+.record-empty { color: var(--muted); font-style: italic; }
+.record-code { color: #cfe8d3; font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.record-markdown { margin: 0; }
+.record-markdown > :first-child { margin-top: 0; }
+.record-markdown > :last-child { margin-bottom: 0; }
+.record-preview { margin: 12px 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
+.record-preview .record-fields { margin: 0; }
 .markdown { color: var(--text); font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; }
 .markdown > :first-child { margin-top: 0; }
 .markdown > :last-child { margin-bottom: 0; }
@@ -310,6 +323,8 @@ pre { max-height: 520px; overflow: auto; border-radius: 10px; padding: 14px; bac
   .extension-actions { justify-content: space-between; }
   .event-filters { grid-template-columns: 1fr; }
   .event-card header { align-items: flex-start; flex-direction: column; }
+  .record-fields { grid-template-columns: 1fr; gap: 3px; }
+  .record-fields dd { margin-bottom: 8px; }
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
   .usage-table { display: block; overflow-x: auto; }
   .topbar { height: 68px; gap: 16px; padding: 0 16px; }

@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -67,9 +69,74 @@ pub fn system_context(
 }
 
 pub fn current_event_input(_store: &SharedEventStore, event: &Event) -> Result<Value> {
-    Ok(user_input(serde_json::to_string(&json!({
-        "current_event": event,
-    }))?))
+    Ok(user_input(event_markdown(event)))
+}
+
+fn event_markdown(event: &Event) -> String {
+    let mut output = format!(
+        "# Current event\n\n- **Event type:** `{}`\n- **Source:** `{}`\n- **ID:** `{}`\n- **Correlation ID:** `{}`\n",
+        event.event_type, event.source, event.id, event.correlation_id
+    );
+    if let Some(causation_id) = event.causation_id {
+        let _ = writeln!(output, "- **Causation ID:** `{causation_id}`");
+    }
+    let _ = writeln!(
+        output,
+        "- **Occurred at:** `{}`\n\n## Payload",
+        event.occurred_at
+    );
+    append_markdown_value(&mut output, &event.payload, 0);
+    output
+}
+
+fn append_markdown_value(output: &mut String, value: &Value, depth: usize) {
+    let indent = "  ".repeat(depth);
+    match value {
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                let label = key.replace('_', " ");
+                match value {
+                    Value::Object(_) | Value::Array(_) => {
+                        let _ = writeln!(output, "{indent}- **{label}:**");
+                        append_markdown_value(output, value, depth + 1);
+                    }
+                    _ => {
+                        let _ = writeln!(
+                            output,
+                            "{indent}- **{label}:** {}",
+                            markdown_scalar(value, depth + 1)
+                        );
+                    }
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                match item {
+                    Value::Object(_) | Value::Array(_) => {
+                        let _ = writeln!(output, "{indent}-");
+                        append_markdown_value(output, item, depth + 1);
+                    }
+                    _ => {
+                        let _ = writeln!(output, "{indent}- {}", markdown_scalar(item, depth + 1));
+                    }
+                }
+            }
+        }
+        _ => {
+            let _ = writeln!(output, "{indent}{}", markdown_scalar(value, depth));
+        }
+    }
+}
+
+fn markdown_scalar(value: &Value, depth: usize) -> String {
+    match value {
+        Value::Null => "—".into(),
+        Value::Bool(value) => if *value { "yes" } else { "no" }.into(),
+        Value::Number(value) => value.to_string(),
+        Value::String(value) => value.replace('\n', &format!("\n{}  ", "  ".repeat(depth))),
+        _ => unreachable!("compound values are rendered recursively"),
+    }
 }
 
 fn user_input(text: String) -> Value {
@@ -82,6 +149,21 @@ fn user_input(text: String) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn current_event_is_rendered_as_markdown() {
+        let event = Event::new(
+            "chat.message.created",
+            "extension:chat",
+            uuid::Uuid::now_v7(),
+            None,
+            json!({ "content": "hello", "role": "user" }),
+        );
+        let text = event_markdown(&event);
+        assert!(text.contains("# Current event"));
+        assert!(text.contains("- **content:** hello"));
+        assert!(!text.contains("{\"current_event\""));
+    }
 
     #[test]
     fn compiles_extension_formatted_text_without_provider_roles() {

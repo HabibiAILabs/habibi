@@ -1,6 +1,7 @@
 import { createLiveBatch, createPermanentFailure, createRequestGate, describeGraphFailure, expireLiveIds, intersectEventIds, pruneLiveIds } from "/assets/graph-layout.mjs";
 import { buildMemoryScene, pickMemoryNode } from "/assets/memory-graph-state.mjs";
 import { createMemoryGraphRenderer } from "/assets/memory-graph.js";
+import { renderRecord } from "/assets/record-format.js";
 
 const form = document.querySelector("#trace-search");
 const idInput = document.querySelector("#trace-id");
@@ -64,11 +65,6 @@ const el = (tag, className, text) => {
   return node;
 };
 const short = value => value ? `${String(value).slice(0, 8)}…${String(value).slice(-4)}` : "—";
-const jsonBlock = value => {
-  const pre = el("pre");
-  pre.textContent = JSON.stringify(value, null, 2);
-  return pre;
-};
 
 async function fetchJson(url, options) {
   const response = await fetch(url, options);
@@ -208,7 +204,9 @@ function renderInspector(kind, item) {
   inspector.append(heading, identityGrid(kind, item));
   if (kind === "event") renderEventDetails(item);
   else renderLogDetails(item);
-  inspector.append(disclosure("Complete record", record));
+  if (!(kind === "log" && record.name.startsWith("model.invocation."))) {
+    inspector.append(disclosure("Complete record", record));
+  }
 }
 
 function identityGrid(kind, item) {
@@ -289,31 +287,46 @@ function renderLogDetails(item) {
   const record = item.record;
   if (record.name === "context.compiled") {
     const model = trace.logs.find(candidate => candidate.record.payload?.context_log_id === record.id && candidate.record.name === "model.invocation.started");
-    inspector.append(section("Built context — exact model input", record.payload.input ?? model?.record.payload?.request?.input));
+    const request = model?.record.payload?.request;
+    inspector.append(section("System context", record.payload.system_context ?? request?.instructions));
+    inspector.append(section("Current event input", record.payload.input ?? request?.input));
     inspector.append(metrics(record.payload, ["extension_hook_count", "extension_items", "rendered_bytes", "estimated_tokens", "hook_preparation_duration_ms", "rendering_duration_ms"]));
     return;
   }
   if (record.name === "model.invocation.started") {
-    inspector.append(section("Model input", record.payload.request));
+    inspector.append(section("Model input", modelInput(record.payload)));
     const completion = trace.logs.find(candidate => candidate.record.payload?.started_log_id === record.id);
     if (completion) inspector.append(modelOutput(completion.record));
     return;
   }
   if (record.name === "model.invocation.completed" || record.name === "model.invocation.failed") {
     const started = trace.logs.find(candidate => candidate.record.id === record.payload?.started_log_id);
-    if (started) inspector.append(section("Model input", started.record.payload.request));
+    if (started) inspector.append(section("Model input", modelInput(started.record.payload)));
     inspector.append(modelOutput(record));
     return;
   }
   inspector.append(section("Log payload", record.payload));
 }
 
+function modelInput(payload) {
+  const request = payload.request || {};
+  return {
+    model: request.model || payload.model,
+    provider: payload.provider,
+    event_type: payload.current_event_type,
+    instructions: request.instructions,
+    input: request.input,
+    tools: (request.tools || []).map(tool => String(tool.name || "unknown").replaceAll("__", ".")),
+  };
+}
+
 function modelOutput(record) {
-  return section(record.name.endsWith("failed") ? "Model failure" : "Model output", record.name.endsWith("failed") ? record.payload : {
+  return section(record.name.endsWith("failed") ? "Model failure" : "Model output", record.name.endsWith("failed") ? {
+    error: record.payload.error,
+    duration_ms: record.payload.duration_ms,
+  } : {
     content: record.payload.content,
     tool_calls: record.payload.tool_calls,
-    output_items: record.payload.output_items,
-    provider_response: record.payload.provider_response,
     usage: record.payload.usage,
     estimated_cost: record.payload.estimated_cost,
     duration_ms: record.payload.duration_ms,
@@ -332,13 +345,13 @@ function metrics(payload, keys) {
 
 function section(title, value) {
   const sectionElement = el("section", "trace-detail-section");
-  sectionElement.append(el("h3", "", title), jsonBlock(value));
+  sectionElement.append(el("h3", "", title), renderRecord(value));
   return sectionElement;
 }
 
 function disclosure(title, value) {
   const details = el("details", "trace-raw");
-  details.append(el("summary", "", title), jsonBlock(value));
+  details.append(el("summary", "", title), renderRecord(value));
   return details;
 }
 

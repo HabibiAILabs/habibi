@@ -1,3 +1,5 @@
+import { renderRecord } from "/assets/record-format.js";
+
 const form = document.querySelector("#event-filters");
 const list = document.querySelector("#event-list");
 const count = document.querySelector("#event-count");
@@ -98,14 +100,39 @@ function eventCard(event) {
     recordLink("Correlation logs", `/logs?correlation_id=${encodeURIComponent(event.correlation_id)}`),
   );
 
+  const preview = eventPreview(event);
   const details = document.createElement("details");
   const summary = document.createElement("summary");
-  summary.textContent = detailLabel(event);
-  const payload = document.createElement("pre");
-  payload.textContent = JSON.stringify(event.payload, null, 2);
-  details.append(summary, payload);
-  article.append(header, metadata, links, details);
+  summary.textContent = preview ? "More event details" : detailLabel(event);
+  details.append(summary, renderRecord(event.payload));
+  article.append(header, metadata, links);
+  if (preview) article.append(preview);
+  article.append(details);
   return article;
+}
+
+function eventPreview(event) {
+  const payload = event.payload || {};
+  let value = null;
+  if (event.event_type === "chat.session.started" || event.event_type === "chat.message.created") {
+    value = { role: payload.role, content: payload.content };
+  } else if (event.event_type === "action.requested") {
+    value = { tool: payload.tool, arguments: payload.arguments, delivery: payload.delivery };
+  } else if (event.event_type.startsWith("action.result.")) {
+    value = { tool: payload.tool, result: payload.result, error: payload.error };
+  } else if (event.event_type.endsWith("execution.completed")) {
+    value = {
+      program: payload.program,
+      status: payload.status,
+      success: payload.success,
+      duration_ms: payload.duration_ms,
+    };
+  }
+  if (!value) return null;
+  const section = document.createElement("section");
+  section.className = "record-preview";
+  section.append(renderRecord(value));
+  return section;
 }
 
 function detailLabel(event) {
