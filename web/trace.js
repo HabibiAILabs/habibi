@@ -351,6 +351,7 @@ function section(title, value) {
 
 function disclosure(title, value) {
   const details = el("details", "trace-raw");
+  details.open = title === "Complete record";
   details.append(el("summary", "", title), renderRecord(value));
   return details;
 }
