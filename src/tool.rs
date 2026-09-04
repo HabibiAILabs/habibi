@@ -106,6 +106,7 @@ pub struct SelectedTool {
 #[derive(Debug, Clone)]
 pub struct ToolSelection {
     pub records: Vec<SelectedTool>,
+    pub query_text: String,
     pub query_sha256: String,
 }
 
@@ -207,6 +208,7 @@ impl ToolRuntime {
         let generation = catalog.generation.clone();
         let definitions = catalog.definitions.clone();
         let correlation_id = event.correlation_id;
+        let search_query = query.clone();
         let discovered = (event.payload.get("tool").and_then(Value::as_str)
             == Some("habibi.tools.search"))
         .then(|| {
@@ -230,7 +232,7 @@ impl ToolRuntime {
             let semantic = embeddings.search(
                 &generation,
                 &definitions,
-                &query,
+                &search_query,
                 SEMANTIC_TOOL_LIMIT,
                 MIN_TOOL_SIMILARITY,
             )?;
@@ -261,6 +263,7 @@ impl ToolRuntime {
         let records = merge_tool_candidates(&registered, used, semantic);
         Ok(ToolSelection {
             records,
+            query_text: query,
             query_sha256,
         })
     }

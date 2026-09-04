@@ -1,7 +1,7 @@
 import { createLiveBatch, createPermanentFailure, createRequestGate, describeGraphFailure, expireLiveIds, intersectEventIds, pruneLiveIds } from "/assets/graph-layout.mjs";
 import { buildMemoryScene, pickMemoryNode } from "/assets/memory-graph-state.mjs";
 import { createMemoryGraphRenderer } from "/assets/memory-graph.js";
-import { renderRecord } from "/assets/record-format.js";
+import { renderRecord, renderToolSurface } from "/assets/record-format.js";
 
 const form = document.querySelector("#trace-search");
 const idInput = document.querySelector("#trace-id");
@@ -288,36 +288,30 @@ function renderLogDetails(item) {
   if (record.name === "context.compiled") {
     const model = trace.logs.find(candidate => candidate.record.payload?.context_log_id === record.id && candidate.record.name === "model.invocation.started");
     const request = model?.record.payload?.request;
-    inspector.append(section("System context", record.payload.system_context ?? request?.instructions));
-    inspector.append(section("Current event input", record.payload.input ?? request?.input));
+    inspector.append(section("Exact model instructions", request?.instructions ?? record.payload.system_context));
+    inspector.append(section("Exact model input", request?.input ?? record.payload.input));
     inspector.append(metrics(record.payload, ["extension_hook_count", "extension_items", "rendered_bytes", "estimated_tokens", "hook_preparation_duration_ms", "rendering_duration_ms"]));
     return;
   }
+  if (record.name === "tool.surface.prepared") {
+    const sectionElement = el("section", "trace-detail-section");
+    sectionElement.append(el("h3", "", "Prepared tool surface"), renderToolSurface(record.payload));
+    inspector.append(sectionElement);
+    return;
+  }
   if (record.name === "model.invocation.started") {
-    inspector.append(section("Model input", modelInput(record.payload)));
+    inspector.append(section("Exact model request", record.payload.request));
     const completion = trace.logs.find(candidate => candidate.record.payload?.started_log_id === record.id);
     if (completion) inspector.append(modelOutput(completion.record));
     return;
   }
   if (record.name === "model.invocation.completed" || record.name === "model.invocation.failed") {
     const started = trace.logs.find(candidate => candidate.record.id === record.payload?.started_log_id);
-    if (started) inspector.append(section("Model input", modelInput(started.record.payload)));
+    if (started) inspector.append(section("Exact model request", started.record.payload.request));
     inspector.append(modelOutput(record));
     return;
   }
   inspector.append(section("Log payload", record.payload));
-}
-
-function modelInput(payload) {
-  const request = payload.request || {};
-  return {
-    model: request.model || payload.model,
-    provider: payload.provider,
-    event_type: payload.current_event_type,
-    instructions: request.instructions,
-    input: request.input,
-    tools: (request.tools || []).map(tool => String(tool.name || "unknown").replaceAll("__", ".")),
-  };
 }
 
 function modelOutput(record) {

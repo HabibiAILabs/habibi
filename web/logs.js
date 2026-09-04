@@ -1,5 +1,5 @@
 import { renderMarkdown } from "/assets/markdown.js";
-import { renderRecord } from "/assets/record-format.js";
+import { renderRecord, renderToolSurface } from "/assets/record-format.js";
 
 const form = document.querySelector("#log-filters");
 const list = document.querySelector("#log-list");
@@ -100,7 +100,14 @@ function structuredModelView(log) {
   if (log.name === "model.invocation.started") return structuredRequest(log.payload);
   if (log.name === "model.invocation.completed") return structuredResponse(log.payload);
   if (log.name === "model.invocation.failed") return structuredFailure(log.payload);
+  if (log.name === "tool.surface.prepared") return structuredToolSurface(log.payload);
   return null;
+}
+
+function structuredToolSurface(payload) {
+  const section = modelSection("Prepared tool surface");
+  section.append(renderToolSurface(payload));
+  return section;
 }
 
 function structuredRequest(payload) {
@@ -114,17 +121,14 @@ function structuredRequest(payload) {
   ]));
 
   if (request.instructions) {
-    const details = disclosure("System instructions", true);
+    const details = disclosure("Exact model instructions", true);
     details.append(renderMarkdown(request.instructions));
     section.append(details);
   }
 
   if (request.input?.length) {
-    const details = disclosure(`Input · ${request.input.length} item${request.input.length === 1 ? "" : "s"}`);
-    const items = document.createElement("div");
-    items.className = "model-structured";
-    request.input.forEach((item, index) => items.append(inputItem(item, index)));
-    details.append(items);
+    const details = disclosure(`Exact model input · ${request.input.length} item${request.input.length === 1 ? "" : "s"}`);
+    details.append(renderRecord(request.input));
     section.append(details);
   }
 
@@ -209,33 +213,6 @@ function structuredFailure(payload) {
   return section;
 }
 
-function inputItem(item, index) {
-  const card = document.createElement("div");
-  card.className = "model-tool-call";
-  const title = document.createElement("strong");
-  title.textContent = `#${index + 1} · ${item.role || item.type || "input"}`;
-  card.append(title);
-  const text = inputText(item);
-  if (text) {
-    try {
-      card.append(renderRecord(JSON.parse(text)));
-    } catch {
-      card.append(renderMarkdown(text));
-    }
-  } else {
-    card.append(renderRecord(item));
-  }
-  return card;
-}
-
-function inputText(item) {
-  if (!Array.isArray(item.content)) return null;
-  return item.content
-    .map((part) => part.text)
-    .filter((text) => typeof text === "string")
-    .join("\n");
-}
-
 function modelSection(title) {
   const section = document.createElement("section");
   section.className = "model-structured";
@@ -272,7 +249,7 @@ function disclosure(label, open = false) {
 }
 
 function rawDetails(log) {
-  if (log.name.startsWith("model.invocation.")) return null;
+  if (log.name.startsWith("model.invocation.") || log.name === "tool.surface.prepared") return null;
   const details = disclosure("Log details");
   details.append(renderRecord(log.payload));
   return details;

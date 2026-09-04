@@ -137,6 +137,10 @@ pre { max-height: 520px; overflow: auto; border-radius: 10px; padding: 14px; bac
 .record-markdown > :last-child { margin-bottom: 0; }
 .record-preview { margin: 12px 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
 .record-preview .record-fields { margin: 0; }
+.tool-surface-view { display: grid; gap: 12px; }
+.tool-surface-view > .record-fields { padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
+.tool-surface-tools { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+.tool-surface-tools .record-fields { margin-bottom: 0; }
 .markdown { color: var(--text); font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; }
 .markdown > :first-child { margin-top: 0; }
 .markdown > :last-child { margin-bottom: 0; }

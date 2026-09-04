@@ -204,7 +204,7 @@ Every completed invocation stores its exact catalog entry and rates, so later re
 rewrite historical estimates. See [`docs/model-catalog.md`](docs/model-catalog.md) for the format
 and refresh semantics.
 
-For each event, Habibi embeds a bounded current-event projection and selects semantically matching registered tools. Tools actually called earlier in the correlation have priority; semantic matches fill a final surface of at most 12 exact-name-deduplicated tools. `habibi.tools.search` is an ordinary indexed tool and uses the same semantic index when selected. Built-in tools can get/query events or logs, create semantic links between events, and traverse those links. Exact embedding model identity, query hash, scores, ranks, reasons, limits, schema size, and catalog generation remain in `tool.surface.prepared` logs.
+For each event, Habibi embeds a bounded current-event projection and selects semantically matching registered tools. Tools actually called earlier in the correlation have priority; semantic matches fill a final surface of at most 12 exact-name-deduplicated tools. `habibi.tools.search` is an ordinary indexed tool and uses the same semantic index when selected. Built-in tools can get/query events or logs, create semantic links between events, and traverse those links. The exact retrieval query, embedding identity, query hash, scores, ranks, selection reasons, limits, schema size, and catalog generation remain in the formatted `tool.surface.prepared` logs.
 
 ## Chat API
 

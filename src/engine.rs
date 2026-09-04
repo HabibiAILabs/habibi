@@ -367,6 +367,7 @@ impl Engine {
             current_event.correlation_id,
             json!({
                 "current_event_id": current_event.id,
+                "current_event_type": current_event.event_type,
                 "catalog_generation": catalog.generation,
                 "duration_ms": surface_started.elapsed().as_millis(),
                 "advertised": surface_definitions.len(),
@@ -374,6 +375,7 @@ impl Engine {
                 "estimated_advertised_schema_tokens": advertised_schema_bytes.div_ceil(4),
                 "embedding_model": self.tools.embedding_model(),
                 "embedding_revision": self.tools.embedding_revision(),
+                "query_text": selection.query_text,
                 "query_text_sha256": selection.query_sha256,
                 "minimum_similarity": crate::embedding::MIN_TOOL_SIMILARITY,
                 "semantic_limit": crate::embedding::SEMANTIC_TOOL_LIMIT,
